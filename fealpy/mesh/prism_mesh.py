@@ -9,6 +9,7 @@ from .mesh_base import Mesh, HomogeneousMesh
 from . import TriangleMesh
 from .utils import simplex_gdof, simplex_ldof, tensor_ldof
 
+import ipdb
 
 class PrismMesh(HomogeneousMesh, Plotable):
     def __init__(self, node: TensorLike, cell: TensorLike):
@@ -81,20 +82,86 @@ class PrismMesh(HomogeneousMesh, Plotable):
         entity = self.entity(etype, index)
         
         if etype in ('face', 2):
-            tflag = bm.where(self.face[:, -1] < 0)
-            qflag = bm.where(~self.face[:, -1] < 0)
-            return bm.concat([bm.barycenter(entity[tflag, :-1][0], node), bm.barycenter(entity[qflag], node)], axis=0)
+            tflag = self.tface_flag()
+            qflag = self.qface_flag()
+            return bm.concat([bm.barycenter(entity[tflag, :-1], node), bm.barycenter(entity[qflag], node)], axis=0)
 
         return bm.barycenter(entity, node)
 
+    def entity_measure(self, etype=3, index=_S):
+        if etype in {'cell', 3}:
+            return self.cell_volume(index=index)
+        elif etype in {'face', 2}:
+            return self.face_area(index=index)
+        elif etype in {'edge', 1}:
+            return self.edge_length(index=index)
+        elif etype in {'node', 0}:
+            return bm.zeros(1, dtype=self.ftype)
+        else:
+            raise ValueError(f"entity type: {etype} is wrong!")
+
+    def cell_volume(self, index=_S):
+        """Compute the volume of an element.
+
+        The volume is calculated using the formula:
+            ∫_c dx = ∫_τ |J| dξ
+        where c is the physical element, τ is the reference element, and J is the Jacobian matrix.
+        """
+        qf = self.quadrature_formula(2, etype=3)
+        bcs, ws = qf.get_quadrature_points_and_weights()
+        J = self.jacobi_matrix(bcs, index=index)
+        detJ = bm.linalg.det(J)
+        val = 0.5 * bm.einsum('q, cq -> c', ws, detJ)
+        return val
+    
+    def face_area(self, index=_S):
+        """Compute the area of all mesh faces.
+        """
+
+        pass
+    
     # counters
     def number_of_tri_faces(self)->int:
-        flag = (self.face < 0)
+        flag = self.tface_flag(type='bool')
         return flag.sum()
     
     def number_of_quad_faces(self)->int:
-        flag = (self.face < 0)
-        return len(self.face) - flag.sum()
+        flag = self.qface_flag(type='bool')
+        return flag.sum()
+    
+    # map
+    def tface_flag(self, type=None):
+        flag = (self.face[:, -1] < -0.5)
+        if type == 'bool':
+            return flag
+        
+        return bm.where(flag)[0]
+
+    def qface_flag(self, type=None):
+        flag = ~(self.face[:, -1] < -0.5)
+        if type == 'bool':
+            return flag
+        
+        return bm.where(flag)[0]
+    
+    def face_to_tface(self, index: Index=_S):
+        """Given the global face index of a triangular face, return its local face index.
+        """
+        a = self.tface_flag()
+        sort_idx = bm.argsort(a)
+        sorted_a = a[sort_idx]
+
+        pos = bm.searchsorted(sorted_a, index)
+        return sort_idx[pos]
+    
+    def face_to_qface(self, index: Index=_S):
+        """Given the global face index of a quadrilateral face, return its local face index.
+        """
+        a = self.qface_flag()
+        sort_idx = bm.argsort(a)
+        sorted_a = a[sort_idx]
+        pos = bm.searchsorted(sorted_a, index)
+        return sort_idx[pos]
     
     # quadrature
    
