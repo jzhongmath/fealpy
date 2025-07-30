@@ -164,9 +164,98 @@ class PrismMesh(HomogeneousMesh, Plotable):
         return sort_idx[pos]
     
     # quadrature
-   
+    def quadrature_formula(self, q: int, etype: Union[int, str]='cell',
+                        qtype: str='legendre'): # TODO: other qtype
+        from ..quadrature import GaussLegendreQuadrature, TensorProductQuadrature, TriangleQuadrature
+        qf0 = TriangleQuadrature(q)
+        qf1 = GaussLegendreQuadrature(q)
+
+        if etype in {'cell', 3}:
+            return TensorProductQuadrature((qf0, qf1)) 
+        elif etype in {'face', 2}:
+            return qf0, TensorProductQuadrature((qf1, qf1))
+        elif etype in {'tface'}:
+            return qf0
+        elif etype in {'qface'}:
+            return TensorProductQuadrature((qf1, qf1))
+        elif etype in {'edge', 1}:
+            return qf1 
+        
     # shape function
-   
+    def grad_lambda(self, index: Index=_S, TD:int=2) -> TensorLike:
+        pass
+
+    def shape_function(self, bcs: Tuple[TensorLike], p: int=1, *, index: Index=_S,
+                       variables: str='u', mi: Optional[TensorLike]=None) -> TensorLike:
+        """Compute the shape function values of the reference element at integration points.
+
+        Parameters:
+            bcs (Tensor): Tuple[(NQ0, 3), (NQ1, 2)], the integration points.
+            p (int, optional): The order of the shape function.
+            index (int | slice | Tensor, optional): The index of the cell.
+            variables : str, default='u'
+                Variable space ('u' or 'x').
+            mi (Tensor, optional): The multi-index matrix. Defaults to None.
+
+        Returns:
+            Tensor: (NQ0*NQ1, ldof). 
+        """           
+        raw_phi = [bm.simplex_shape_function(bc, p) for bc in bcs] # ((NQ0, ldof0), (NQ1, ldof1))
+        phi = bm.tensorprod(*raw_phi)
+        if variables == 'u':
+            return phi
+        elif variables == 'x':
+            return phi[None, ...]
+        else:
+            raise ValueError("Variables type is expected to be 'u' or 'x', "
+                             f"but got '{variables}'.")
+        
+    def grad_shape_function(self, bcs: Tuple[TensorLike], p: int=1, *, index: Index=_S,
+                            variables: str='u', mi: Optional[TensorLike]=None) -> TensorLike:
+        """Compute the gradient of shape functions of an element with respect to reference variables u = (eta, zeta, xi) or physical variables x.
+            lambda_0 = 1 - eta - zeta
+            lambda_1 = eta
+            lambda_2 = zeta
+            lambda_3 = 1 - xi
+            lambda_4 = xi
+
+        Parameters
+            bcs Tuple[Tensor]: ((NQ0, 3), (NQ1, 2)), the integration points.
+            p (int, optional): The order of the shape function.
+            index (int | slice | Tensor, optional): The index of the cell.
+            variables : str, default='u'
+                Variable space ('u' or 'x').
+            mi (Tensor, optional): The multi-index matrix. Defaults to None.
+
+        Returns
+            'u': (NQ, ldof, GD). 
+            'x': (NC, NQ, ldof, GD)
+        """
+        Dlambda0 = bm.array([[-1, -1], [1, 0], [0, 1]], dtype=self.ftype)       
+        Dlambda1 = bm.array([[-1], [1]], dtype=self.ftype)
+        
+        phi0 = bm.simplex_shape_function(bcs[0], p) # (NQ0, 1/2*(p+1)*(p+2))
+        phi1 = bm.simplex_shape_function(bcs[1], p) # (NQ1, (p+1))
+
+        R0 = bm.simplex_grad_shape_function(bcs[0], p) # (NQ0, 1/2*(p+1)*(p+2), 3)
+        R1 = bm.simplex_grad_shape_function(bcs[1], p) # (NQ1, (p+1), 2)
+        gphi0 = bm.einsum('...ij, jn->...in', R0, Dlambda0) # (NQ0, 1/2*(p+1)*(p+2), 2)
+        gphi1 = bm.einsum('...ij, jn->...in', R1, Dlambda1) # (NQ1, (p+1), 1)
+
+        n = len(bcs[0])*len(bcs[1])
+        gxy = gphi0[:, None, :, None, :] * phi1[None, :, None, :, None]
+        gz  = phi0[:, None, :, None, None] * gphi1[None, :, None, :, :]      
+        gphi = bm.concatenate([gxy, gz], axis=-1)                      
+        gphi = gphi.reshape(n, (p+1)*(p+1)*(p+2)//2, 3)                                
+        if variables == 'u':
+            return gphi #(NQ, ldof, GD)
+        elif variables == 'x':
+            G, J = self.first_fundamental_form(bcs, index=index,
+                    return_jacobi=True)
+            G = bm.linalg.inv(G)
+            gphi = bm.einsum('cqmk, cqkn, qlm->cqln', J, G, gphi)
+            return gphi
+
     # ipoint
     def number_of_local_ipoints(self, p: int, iptype: Union[int, str]='cell')->int:
         if iptype == 'cell':
@@ -207,12 +296,8 @@ class PrismMesh(HomogeneousMesh, Plotable):
 
         if isinstance(bcs, tuple) and len(bcs) == 2 and (bcs[0].shape[1] == 3):
             cell = self.entity('cell', index)
-            bc0 = bcs[0] # (NQ0, 3)
-            bc1 = bcs[1] # (NQ1, 2)
-            tp = bm.stack([node[cell[:, [0, 1, 2]]], node[cell[:, [3, 4, 5]]]], axis=1)  #(NC, 2, 3, 3)
-            pp = bm.einsum('im,nkmj->nikj', bc0, tp) # (NC, NQ0, 2, 3)
-            p = bm.einsum('qi,nmij->nmqj', bc1, pp)             # (NC, NQ0, NQ1, 3)
-            points = p.reshape(len(cell), len(bc0)*len(bc1), 3)      # (NC, NQ0*NQ1, 3)
+            phi = self.shape_function(bcs)
+            points = bm.einsum('cim,qi->cqm', node[cell[:, [0,3,1,4,2,5]]], phi)
         
         elif isinstance(bcs, tuple) and len(bcs) == 2 and len(bcs[0] == 3):
             pass
@@ -437,7 +522,74 @@ class PrismMesh(HomogeneousMesh, Plotable):
     # refine
 
     # jacobi
-  
+    def jacobi_matrix(self, bcs: Tuple[TensorLike], index: Index=_S, etype='cell', ftype=None, 
+            return_grad=False):
+        """Compute the Jacobian matrix of the mapping from the reference element (eta, zeta, xi) to the physical Lagrange triangular prism (x).
+        Where:
+            1. x(eta, zeta, xi) = phi_0 x_0 + phi_1 x_1 + ... + phi_{ldof-1} x_{ldof-1}
+            2. For p = 1, we have ldof = 6.
+
+        Parameters
+            bcs: Tuple[TensorLike]
+                ((NQ0, 3), (NQ1, 2)), the integration points.
+
+        Returns
+            J: TensorLike
+                (NC, NQ0*NQ1, 3, 3), the Jacobian [∂X/∂U] for each cell.
+            gphi: TensorLike
+                (NQ0*NQ1, 6, 3), gradients of the basis functions with respect to u.
+        """
+        node = self.entity('node')
+        cell = self.entity('cell')
+        
+        if etype in {'cell', 3}:
+            gphi = self.grad_shape_function(bcs) # (NQ, 6, 3)
+            node_cell_flip = node[cell[index, [0, 3, 1, 4, 2, 5]]] # (NC, 6, 3)
+            J = bm.einsum('cim, qin -> cqmn'
+                          , node_cell_flip, gphi) # (NC, NQ, 3, 3)
+        
+        if return_grad is False:
+            return J
+        else:
+            return J, gphi
+    
+    def first_fundamental_form(self, bcs: Tuple[TensorLike], index: Index=_S, etype='cell',
+            ftype=None, return_jacobi=False, return_grad=False):
+        """Compute the first fundamental form of the Lagrange mesh at integration points.
+
+        Parameter
+            bcs: Tuple[TensorLike]
+                ((NQ0, 3), (NQ1, 2)), the integration points
+        
+        Returns
+            G: TensorLike
+                (NC, NQ, 3, 3)
+            J: TensorLike
+                (NC, NQ, 3, 3)
+        """
+        J = self.jacobi_matrix(bcs, index=index, return_grad=return_grad)
+        
+        if return_grad:
+            J, gphi = J
+
+        G = bm.einsum('...ji,...jk->...ik', J, J)
+        # shape = J.shape[0:-2] + (TD, TD)
+        # G = bm.zeros(shape, dtype=self.ftype)
+        # ipdb.set_trace()
+        # for i in range(TD):
+        #     G[..., i, i] = bm.sum(J[..., i]**2, axis=-1)
+        #     for j in range(i+1, TD):
+        #         G[..., i, j] = bm.sum(J[..., i]*J[..., j], axis=-1)
+        #         G[..., j, i] = G[..., i, j]
+        if (return_jacobi is False) & (return_grad is False):
+            return G
+        elif (return_jacobi is True) & (return_grad is False): 
+            return G, J
+        elif (return_jacobi is False) & (return_grad is True): 
+            return G, gphi 
+        else:
+            return G, J, gphi
+        
     # topology
     def face_to_edge(self, index: Index=_S):
         face2edge = super().face_to_edge()
