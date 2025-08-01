@@ -9,7 +9,6 @@ from .mesh_base import Mesh, HomogeneousMesh
 from . import TriangleMesh
 from .utils import simplex_gdof, simplex_ldof, tensor_ldof
 
-import ipdb
 
 class PrismMesh(HomogeneousMesh, Plotable):
     def __init__(self, node: TensorLike, cell: TensorLike):
@@ -82,8 +81,8 @@ class PrismMesh(HomogeneousMesh, Plotable):
         entity = self.entity(etype, index)
         
         if etype in ('face', 2):
-            tflag = self.tface_flag()
-            qflag = self.qface_flag()
+            tflag = self.tface_flag(index=index)
+            qflag = self.qface_flag(index=index)
             return bm.concat([bm.barycenter(entity[tflag, :-1], node), bm.barycenter(entity[qflag], node)], axis=0)
 
         return bm.barycenter(entity, node)
@@ -109,9 +108,10 @@ class PrismMesh(HomogeneousMesh, Plotable):
         """
         qf = self.quadrature_formula(2, etype=3)
         bcs, ws = qf.get_quadrature_points_and_weights()
-        J = self.jacobi_matrix(bcs, index=index)
-        detJ = bm.linalg.det(J)
-        val = 0.5 * bm.einsum('q, cq -> c', ws, detJ)
+        G = self.first_fundamental_form(bcs, index=index)
+        l = bm.sqrt(bm.linalg.det(G))
+        val = 0.5 * bm.einsum('q, cq -> c', ws, l)
+
         return val
     
     def face_area(self, index=_S):
@@ -130,15 +130,15 @@ class PrismMesh(HomogeneousMesh, Plotable):
         return flag.sum()
     
     # map
-    def tface_flag(self, type=None):
-        flag = (self.face[:, -1] < -0.5)
+    def tface_flag(self, type=None, index: Index=_S):
+        flag = (self.entity('face')[index, -1] < -0.5)
         if type == 'bool':
             return flag
         
         return bm.where(flag)[0]
 
-    def qface_flag(self, type=None):
-        flag = ~(self.face[:, -1] < -0.5)
+    def qface_flag(self, type=None, index: Index=_S):
+        flag = ~(self.entity('face')[index, -1] < -0.5)
         if type == 'bool':
             return flag
         
@@ -246,14 +246,17 @@ class PrismMesh(HomogeneousMesh, Plotable):
         gxy = gphi0[:, None, :, None, :] * phi1[None, :, None, :, None]
         gz  = phi0[:, None, :, None, None] * gphi1[None, :, None, :, :]      
         gphi = bm.concatenate([gxy, gz], axis=-1)                      
-        gphi = gphi.reshape(n, (p+1)*(p+1)*(p+2)//2, 3)                                
+        gphi = gphi.reshape(n, (p+1)*(p+1)*(p+2)//2, 3)  
+                          
         if variables == 'u':
             return gphi #(NQ, ldof, GD)
         elif variables == 'x':
             G, J = self.first_fundamental_form(bcs, index=index,
                     return_jacobi=True)
             G = bm.linalg.inv(G)
-            gphi = bm.einsum('cqmk, cqkn, qlm->cqln', J, G, gphi)
+            gphi = bm.einsum('cqkm, cqmn, qln -> cqlk', J, G, gphi) # (NC, NQ, ldof, GD)
+            # gphi = bm.einsum('cqmk, cqkn, qlm->cqln', J, G, gphi)
+
             return gphi
 
     # ipoint
@@ -318,7 +321,7 @@ class PrismMesh(HomogeneousMesh, Plotable):
         line = bm.concatenate([1-line, line], axis=1)
         bcs = (mi/p, line)
         cip = self.bc_to_point(bcs)
-        ipoint[c2ip] = cip
+        ipoint = bm.set_at(ipoint, (c2ip, slice(None)), cip)
 
         return ipoint
 
@@ -341,16 +344,16 @@ class PrismMesh(HomogeneousMesh, Plotable):
         fdof = (p+1)*(p+2)//2
 
         edgeIdx = bm.zeros((2, p+1), dtype=self.itype)
-        edgeIdx[0, :] = bm.arange(p+1)
-        edgeIdx[1, :] = bm.flip(edgeIdx[0])
+        edgeIdx = bm.set_at(edgeIdx, (0, slice(None)), bm.arange(p+1))
+        edgeIdx = bm.set_at(edgeIdx, (1, slice(None)), bm.flip(edgeIdx[0]))
 
         NN = self.number_of_nodes()
         NE = self.number_of_edges()
         NF_tri = self.number_of_tri_faces()
         face = self.entity('face')
         edge = self.entity('edge')
-        flag = bm.where(face[:, -1] < 0)
-        face = face[flag, :-1][0]
+        flag = self.tface_flag()
+        face = face[flag, :-1]
         face2edge = self.face_to_edge()[flag]
         edge2ipoint = self.edge_to_ipoint(p)
         face2ipoint = bm.zeros((NF_tri, fdof), dtype=self.itype)
@@ -358,16 +361,19 @@ class PrismMesh(HomogeneousMesh, Plotable):
         faceIdx = self.multi_index_matrix(p, TD-1, dtype=self.ftype)
         isEdgeIPoint = (faceIdx == 0)
         fe = bm.array([1, 0, 0])
+        
         for i in range(3):
             I = bm.ones(NF_tri, dtype=bm.int64)
             sign = (face[:, fe[i]] == edge[face2edge[:, i], 0])
-            I[sign] = 0
-            face2ipoint[:, isEdgeIPoint[:, i]] = edge2ipoint[face2edge[:, [i]], edgeIdx[I]]
+            I = bm.set_at(I, sign, 0)
+            face2ipoint = bm.set_at(face2ipoint, (slice(None), isEdgeIPoint[:, i]), edge2ipoint[face2edge[:, [i]], edgeIdx[I]])
+        
         if p > 2:
             base = NN + (p-1)*NE
             isInFaceIPoint = ~(isEdgeIPoint[:, 0] | isEdgeIPoint[:, 1] | isEdgeIPoint[:, 2])
             fidof = fdof - 3*p
-            face2ipoint[:, isInFaceIPoint] = base + bm.arange(NF_tri*fidof, dtype=bm.int32).reshape(NF_tri, fidof)
+            face2ipoint = bm.set_at(face2ipoint, (slice(None), isInFaceIPoint), base + bm.arange(NF_tri*fidof, dtype=bm.int32).reshape(NF_tri, fidof))
+
         return face2ipoint[index]
     
     def quad_to_ipoint(self, p, index=None):
@@ -391,7 +397,7 @@ class PrismMesh(HomogeneousMesh, Plotable):
         NF_t = self.number_of_tri_faces()
         edge = self.entity('edge')
         face = self.entity('face')
-        flag = bm.where(face[:, -1] > -0.5)
+        flag = self.qface_flag()
         face = self.entity('face')[flag]
         face2edge = self.face_to_edge()[flag]
         edge2ipoint = self.edge_to_ipoint(p)
@@ -401,11 +407,11 @@ class PrismMesh(HomogeneousMesh, Plotable):
         multiIndex1 = mi.T.flatten().reshape(-1, 1);
         multiIndex = bm.concatenate([multiIndex0, multiIndex1], axis=1)
 
-        dofidx = [0 for i in range(4)] 
-        dofidx[0], = bm.nonzero(multiIndex[:, 1]==0)
-        dofidx[1], = bm.nonzero(multiIndex[:, 0]==p)
-        dofidx[2], = bm.nonzero(multiIndex[:, 1]==p)
-        dofidx[3], = bm.nonzero(multiIndex[:, 0]==0)
+        dofidx = bm.zeros((4, p+1), dtype=bm.int32)
+        dofidx = bm.set_at(dofidx, 0, bm.nonzero(multiIndex[:, 1]==0)[0])
+        dofidx = bm.set_at(dofidx, 1, bm.nonzero(multiIndex[:, 0]==p)[0])
+        dofidx = bm.set_at(dofidx, 2, bm.nonzero(multiIndex[:, 1]==p)[0])
+        dofidx = bm.set_at(dofidx, 3, bm.nonzero(multiIndex[:, 0]==0)[0])
         
         face2ipoint = bm.zeros([NF_q, (p+1)**2], dtype=self.itype, device=bm.get_device(edge))
         localEdge = bm.array([[0, 1], [1, 2], [3, 2], [0, 3]], 
@@ -464,28 +470,28 @@ class PrismMesh(HomogeneousMesh, Plotable):
         qface2ipoint = self.quad_to_ipoint(p)[0]
         m1 = bm.arange(p+1, device=bm.get_device(cell))
         m2 = bm.multi_index_matrix(p, 2)
-        multiIndex0 = m2[:, None, :].repeat(len(m1), axis=1)        # (len(m2), len(m1), 3)
-        multiIndex1 = m1[None, :, None].repeat(len(m2), axis=0)   # (len(m2), len(m1), 1)
+        multiIndex0 = bm.repeat(m2[:, None, :], len(m1), axis=1) # (len(m2), len(m1), 3)
+        multiIndex1 = bm.repeat(m1[None, :, None], len(m2), axis=0)  # (len(m2), len(m1), 1)
         multiIndex = bm.concatenate([multiIndex0, multiIndex1], axis=-1).reshape(-1,4)
         cell2ipoint = bm.zeros([NC, (p+2)*(p+1)**2//2],
                             dtype=self.itype, device=bm.get_device(cell))  
         
-        e0 = bm.array([[0, 1, 2], [2, 0, 1], [1, 2, 0], [1, 0, 2], [2, 1, 0], [0, 2, 1]])
-        a = bm.array([0, 0, 1])
-        w = bm.array([(p+1)**2, (p+1), 1])
+        e0 = bm.array([[0, 1, 2], [2, 0, 1], [1, 2, 0], [1, 0, 2], [2, 1, 0], [0, 2, 1]], dtype=bm.int32)
+        a = bm.array([0, 0, 1], dtype=bm.int32)
+        w = bm.array([(p+1)**2, (p+1), 1], dtype=bm.int32)
         for i in range(2):  
             tface2edge = face2edge[cell2face[:, i]][:,[2,0,1]] # (NC, 3), interpolation point order for triangle face
-            idx = bm.argmax(cell2edge[:, bm.arange(6*i,6*i+3)][:, :, None] == tface2edge[:, None, :], axis=2) # (NC, 3)
+            idx = bm.nonzero(cell2edge[:, bm.arange(6*i,6*i+3)][:, :, None] == tface2edge[:, None, :])[2].reshape(-1, 3) # (NC, 3)
             b = a[idx[:, 1] - idx[:, 0]] # (NC,), 1 means reversed, 0 means same order
             idx = e0[3*b + idx[:, 0]] # (NC, 3)， Multi-index of swapped axes per cell
-            rm = m2[:, idx.T].transpose(2, 0, 1) 
-            idx1 = len(m2) - 1 - bm.argsort(bm.argsort( bm.einsum('ijk,k->ij', rm, w), axis=1),axis=1) # (NC, ldof)
-            key0 = bm.where(self.face[:, -1] < 0)
-            idx0 = bm.searchsorted(key0[0], cell2face[:,i])
+            rm = bm.permute_dims(m2[:, idx.T], (2, 0, 1)) 
+            idx1 = len(m2) - 1 - bm.argsort(bm.argsort(bm.einsum('ijk,k->ij', rm, w), axis=1),axis=1) # (NC, ldof)
+            key0 = self.tface_flag()
+            idx0 = bm.searchsorted(key0, cell2face[:,i])
             tf2p0 = tface2ipoint[bm.arange(NF_t)[idx0]] # Indices of interpolation points on the i-th triangle face of each cell
             tfacemultiIdx = (multiIndex[:,-1]==i*p)
-            cell2ipoint[:, tfacemultiIdx] = tf2p0[bm.arange(NC)[:, None], idx1]           
-        
+            cell2ipoint = bm.set_at(cell2ipoint, (slice(None), tfacemultiIdx), tf2p0[bm.arange(NC)[:, None], idx1])         
+      
         shape = (p+1, p+1)
         mi = bm.arange(p+1, device=bm.get_device(cell))
         rmi = bm.arange(p, -1, -1, device=bm.get_device(cell))
@@ -495,40 +501,66 @@ class PrismMesh(HomogeneousMesh, Plotable):
             bm.broadcast_to(mi[:, None], shape), bm.broadcast_to(rmi[:, None], shape),
             bm.broadcast_to(mi[None, :], shape), bm.broadcast_to(rmi[None, :], shape)
         ], axis=-1).reshape(-1, 4)
-        Index = bm.take(Index, indices=e1, axis=1).transpose(1,0,2)  # shape: (8,(p+1)**2,2)
+        Index = bm.permute_dims(Index[:, e1], (1,0,2))  # shape: (8,(p+1)**2,2)
         ridx = bm.einsum('ijk,k->ij', Index, w) # (8, (p+1)**2), Reindexing patterns for the 8 possible cases
         a = bm.array([0, 0, 0, 1])
         e = bm.array([[0, 4, 6, 3], [1, 5, 7, 4], [2, 5, 8, 3]], dtype=bm.int32)
         
         for j in range(3):
             qface2edge = face2edge[cell2face[:, j+2]]
-            idx = bm.argmax(cell2edge[:, e[j]][:, :, None] == qface2edge[:, None, :], axis=2) # (NC, 4)
+            idx = bm.nonzero(cell2edge[:, e[j]][:, :, None] == qface2edge[:, None, :])[2].reshape(-1, 4) # (NC, 4)
             b = a[idx[:, 1] - idx[:, 0]] # (NC, )
             idx1 = ridx[4*b + idx[:, 0]] # (NC, (p+1)**2)
-            key0 = bm.where(~(self.face[:, -1] < 0))
-            idx0 = bm.searchsorted(key0[0], cell2face[:,j+2])
+            key0 = self.qface_flag()
+            idx0 = bm.searchsorted(key0, cell2face[:,j+2])
             tf2p0 = qface2ipoint[bm.arange(NF_q)[idx0]]
             qfacemultiIdx = (multiIndex[:, (j+2)%3] == 0) 
-            cell2ipoint[:, qfacemultiIdx] = tf2p0[bm.arange(NC)[:, None], idx1]
+            cell2ipoint = bm.set_at(cell2ipoint, (slice(None), qfacemultiIdx), tf2p0[bm.arange(NC)[:, None], idx1])
 
         if p > 2:
             isInCellIPoint = bm.all(multiIndex[:, :-1] > 0, axis=1) & (multiIndex[:, -1]>0) & (multiIndex[:, -1]<p)
             base = NF_t*(p-1)*(p-2)//2 + NF_q*(p-1)**2 + NE*(p-1) + NN
-            cell2ipoint[:, isInCellIPoint] = base + bm.arange(NC*(p-1)**2*(p-2)//2).reshape(NC, -1)      
+            cell2ipoint = bm.set_at(cell2ipoint, (slice(None), isInCellIPoint), base + bm.arange(NC*(p-1)**2*(p-2)//2, dtype=bm.int32).reshape(NC, -1))
 
         return cell2ipoint[index]
     # boundary
   
     # refine
+    def uniform_refine(self, n=1, returnim=False):
+        """
+        Uniform refine the prismMesh n times.
 
+        Parameters:
+            n (int): Times refine the prism mesh.
+            returnirm (bool): Return the prolongation matrix list or not,from the finest to the the coarsest
+        
+        Returns:
+            mesh: The mesh obtained after uniformly refining n times.
+            List(CSRTensor): The prolongation matrix from the finest to the the coarsest
+        """
+        if returnim is True:
+            IM = []
+        
+        for i in range(n):
+            pass
+
+        if returnim is True:
+            IM.reverse()
+            return IM
+        
     # jacobi
     def jacobi_matrix(self, bcs: Tuple[TensorLike], index: Index=_S, etype='cell', ftype=None, 
             return_grad=False):
         """Compute the Jacobian matrix of the mapping from the reference element (eta, zeta, xi) to the physical Lagrange triangular prism (x).
         Where:
             1. x(eta, zeta, xi) = phi_0 x_0 + phi_1 x_1 + ... + phi_{ldof-1} x_{ldof-1}
-            2. For p = 1, we have ldof = 6.
-
+            2. For p = 1, we have ldof = 6. And
+                phi_0 = (1 - eta - zeta) * (1 - xi),
+                phi_0 = (1 - eta - zeta) * xi,
+                phi_0 = eta * (1 - xi),
+                phi_0 = eta * xi,
+                phi_0 = zeta * (1 - xi),
+                phi_0 = zeta * xi.
         Parameters
             bcs: Tuple[TensorLike]
                 ((NQ0, 3), (NQ1, 2)), the integration points.
@@ -543,7 +575,7 @@ class PrismMesh(HomogeneousMesh, Plotable):
         cell = self.entity('cell')
         
         if etype in {'cell', 3}:
-            gphi = self.grad_shape_function(bcs) # (NQ, 6, 3)
+            gphi = self.grad_shape_function(bcs, p=1, variables='u')  # (NQ, 6, 3)
             node_cell_flip = node[cell[index, [0, 3, 1, 4, 2, 5]]] # (NC, 6, 3)
             J = bm.einsum('cim, qin -> cqmn'
                           , node_cell_flip, gphi) # (NC, NQ, 3, 3)
@@ -567,20 +599,19 @@ class PrismMesh(HomogeneousMesh, Plotable):
             J: TensorLike
                 (NC, NQ, 3, 3)
         """
-        J = self.jacobi_matrix(bcs, index=index, return_grad=return_grad)
-        
-        if return_grad:
-            J, gphi = J
+        J, gphi = self.jacobi_matrix(bcs, index=index, return_grad=True)
+        TD = J.shape[-1]
+        shape = J.shape[0:-2] + (TD, TD)
+        data = [[0 for i in range(TD)] for j in range(TD)]
 
-        G = bm.einsum('...ji,...jk->...ik', J, J)
-        # shape = J.shape[0:-2] + (TD, TD)
-        # G = bm.zeros(shape, dtype=self.ftype)
-        # ipdb.set_trace()
-        # for i in range(TD):
-        #     G[..., i, i] = bm.sum(J[..., i]**2, axis=-1)
-        #     for j in range(i+1, TD):
-        #         G[..., i, j] = bm.sum(J[..., i]*J[..., j], axis=-1)
-        #         G[..., j, i] = G[..., i, j]
+        for i in range(TD):
+            data[i][i] = bm.einsum('...d, ...d->...', J[..., i], J[..., i])
+            for j in range(i+1, TD):
+                data[i][j] = bm.einsum('...d, ...d->...', J[..., i], J[..., j])
+                data[j][i] = data[i][j]
+        data = [val.reshape(val.shape+(1,)) for data_ in data for val in data_]
+        G = bm.concatenate(data, axis=-1).reshape(shape)
+
         if (return_jacobi is False) & (return_grad is False):
             return G
         elif (return_jacobi is True) & (return_grad is False): 
