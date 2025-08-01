@@ -408,6 +408,7 @@ class PrismMesh(HomogeneousMesh, Plotable):
         multiIndex = bm.concatenate([multiIndex0, multiIndex1], axis=1)
 
         dofidx = bm.zeros((4, p+1), dtype=bm.int32)
+        # ipdb.set_trace()
         dofidx = bm.set_at(dofidx, 0, bm.nonzero(multiIndex[:, 1]==0)[0])
         dofidx = bm.set_at(dofidx, 1, bm.nonzero(multiIndex[:, 0]==p)[0])
         dofidx = bm.set_at(dofidx, 2, bm.nonzero(multiIndex[:, 1]==p)[0])
@@ -485,6 +486,7 @@ class PrismMesh(HomogeneousMesh, Plotable):
             b = a[idx[:, 1] - idx[:, 0]] # (NC,), 1 means reversed, 0 means same order
             idx = e0[3*b + idx[:, 0]] # (NC, 3)， Multi-index of swapped axes per cell
             rm = bm.permute_dims(m2[:, idx.T], (2, 0, 1)) 
+            # ipdb.set_trace()
             idx1 = len(m2) - 1 - bm.argsort(bm.argsort(bm.einsum('ijk,k->ij', rm, w), axis=1),axis=1) # (NC, ldof)
             key0 = self.tface_flag()
             idx0 = bm.searchsorted(key0, cell2face[:,i])
@@ -542,7 +544,112 @@ class PrismMesh(HomogeneousMesh, Plotable):
             IM = []
         
         for i in range(n):
-            pass
+            NN = self.number_of_nodes()
+            NE = self.number_of_edges()
+            NF_t = self.number_of_tri_faces()
+            NF_q = self.number_of_quad_faces()
+            NC = self.number_of_cells()
+            node_old = self.entity('node')
+            edge_old = self.entity('edge')
+            cell_old = self.entity('cell')
+            face_old = self.entity('face')
+            qflag = self.qface_flag()
+
+            if returnim is True:
+                pass
+
+            node = self.interpolation_points(p=2)
+            cell = bm.zeros((8*NC, 6), dtype=self.itype, device=self.device)
+            c2p = self.cell_to_ipoint(p=2)
+            cell = bm.set_at(cell, (slice(0, None, 8)), c2p[:, [0, 3, 6, 1, 4, 7]])
+            cell = bm.set_at(cell, (slice(1, None, 8)), c2p[:, [3, 12, 6, 4, 13, 7]])
+            cell = bm.set_at(cell, (slice(2, None, 8)), c2p[:, [9, 12, 3, 10, 13, 4]])
+            cell = bm.set_at(cell, (slice(3, None, 8)), c2p[:, [15, 6, 12, 16, 7, 13]])
+            cell = bm.set_at(cell, (slice(4, None, 8)), c2p[:, [1, 4, 7, 2, 5, 8]])
+            cell = bm.set_at(cell, (slice(5, None, 8)), c2p[:, [4, 13, 7, 5, 14, 8]])
+            cell = bm.set_at(cell, (slice(6, None, 8)), c2p[:, [10, 13, 4, 11, 14, 5]])
+            cell = bm.set_at(cell, (slice(7, None, 8)), c2p[:, [16, 7, 13, 17, 8, 14]])
+
+            # node = bm.zeros((NN + NE + NF_q + NC, 3),
+            #                 dtype=self.ftype, device=self.device)
+            # cell = bm.zeros((8*NC, 6),
+            #                 dtype=self.itype, device=self.device)
+            
+            # start = 0
+            # end = NN
+            # node = bm.set_at(node, (slice(start, end), slice(None)), self.entity('node'))
+            # start = end
+            # end = start + NE
+            # node = bm.set_at(node, (slice(start, end), slice(None)), self.entity_barycenter('edge'))
+            # start = end
+            # end = start + NF_q
+            # node = bm.set_at(node, (slice(start, end), slice(None)), bm.barycenter(face_old[qflag], node))
+            # start = end
+
+            # c2n = self.entity('cell')
+            # c2e = self.cell_to_edge() + NN
+            # c2f = self.cell_to_face()
+            # c2f = self.face_to_qface(c2f[:,2:]) + (NN + NE)
+
+            # cell = bm.set_at(cell, (slice(0, None, 8), 0), c2n[:, 0])
+            # cell = bm.set_at(cell, (slice(0, None, 8), 1), c2e[:, 0])
+            # cell = bm.set_at(cell, (slice(0, None, 8), 2), c2e[:, 2])
+            # cell = bm.set_at(cell, (slice(0, None, 8), 3), c2e[:, 3])
+            # cell = bm.set_at(cell, (slice(0, None, 8), 4), c2f[:, 0])  # 2 - 2 == 0
+            # cell = bm.set_at(cell, (slice(0, None, 8), 5), c2f[:, 2])  # 4 - 2 == 2
+
+            # cell = bm.set_at(cell, (slice(1, None, 8), 0), c2e[:, 0])
+            # cell = bm.set_at(cell, (slice(1, None, 8), 1), c2e[:, 1])
+            # cell = bm.set_at(cell, (slice(1, None, 8), 2), c2e[:, 2])
+            # cell = bm.set_at(cell, (slice(1, None, 8), 3), c2f[:, 0])
+            # cell = bm.set_at(cell, (slice(1, None, 8), 4), c2f[:, 1])
+            # cell = bm.set_at(cell, (slice(1, None, 8), 5), c2f[:, 2])
+
+            # cell = bm.set_at(cell, (slice(2, None, 8), 0), c2n[:, 1])
+            # cell = bm.set_at(cell, (slice(2, None, 8), 1), c2e[:, 1])
+            # cell = bm.set_at(cell, (slice(2, None, 8), 2), c2e[:, 0])
+            # cell = bm.set_at(cell, (slice(2, None, 8), 3), c2e[:, 4])
+            # cell = bm.set_at(cell, (slice(2, None, 8), 4), c2f[:, 1])  # 3 - 2 == 1
+            # cell = bm.set_at(cell, (slice(2, None, 8), 5), c2f[:, 0])  # 2 - 2 == 0
+
+            # cell = bm.set_at(cell, (slice(3, None, 8), 0), c2n[:, 2])
+            # cell = bm.set_at(cell, (slice(3, None, 8), 1), c2e[:, 2])
+            # cell = bm.set_at(cell, (slice(3, None, 8), 2), c2e[:, 1])
+            # cell = bm.set_at(cell, (slice(3, None, 8), 3), c2e[:, 5])
+            # cell = bm.set_at(cell, (slice(3, None, 8), 4), c2f[:, 2])  # 4 - 2 == 2
+            # cell = bm.set_at(cell, (slice(3, None, 8), 5), c2f[:, 1])  # 3 - 2 == 1
+
+            # cell = bm.set_at(cell, (slice(4, None, 8), 0), c2e[:, 3])
+            # cell = bm.set_at(cell, (slice(4, None, 8), 1), c2f[:, 0])
+            # cell = bm.set_at(cell, (slice(4, None, 8), 2), c2f[:, 2])
+            # cell = bm.set_at(cell, (slice(4, None, 8), 3), c2n[:, 3])
+            # cell = bm.set_at(cell, (slice(4, None, 8), 4), c2e[:, 6])
+            # cell = bm.set_at(cell, (slice(4, None, 8), 5), c2e[:, 8])
+
+            # cell = bm.set_at(cell, (slice(5, None, 8), 0), c2f[:, 0])
+            # cell = bm.set_at(cell, (slice(5, None, 8), 1), c2f[:, 1])
+            # cell = bm.set_at(cell, (slice(5, None, 8), 2), c2f[:, 2])
+            # cell = bm.set_at(cell, (slice(5, None, 8), 3), c2e[:, 6])
+            # cell = bm.set_at(cell, (slice(5, None, 8), 4), c2e[:, 7])
+            # cell = bm.set_at(cell, (slice(5, None, 8), 5), c2e[:, 8])
+
+            # cell = bm.set_at(cell, (slice(6, None, 8), 0), c2e[:, 4])
+            # cell = bm.set_at(cell, (slice(6, None, 8), 1), c2f[:, 1])
+            # cell = bm.set_at(cell, (slice(6, None, 8), 2), c2f[:, 0])
+            # cell = bm.set_at(cell, (slice(6, None, 8), 3), c2n[:, 4])
+            # cell = bm.set_at(cell, (slice(6, None, 8), 4), c2e[:, 7])
+            # cell = bm.set_at(cell, (slice(6, None, 8), 5), c2e[:, 6])
+
+            # cell = bm.set_at(cell, (slice(7, None, 8), 0), c2e[:, 5])
+            # cell = bm.set_at(cell, (slice(7, None, 8), 1), c2f[:, 2])
+            # cell = bm.set_at(cell, (slice(7, None, 8), 2), c2f[:, 1])
+            # cell = bm.set_at(cell, (slice(7, None, 8), 3), c2n[:, 5])
+            # cell = bm.set_at(cell, (slice(7, None, 8), 4), c2e[:, 8])
+            # cell = bm.set_at(cell, (slice(7, None, 8), 5), c2e[:, 7])
+
+            self.node = node
+            self.cell = cell
+            self.construct()
 
         if returnim is True:
             IM.reverse()

@@ -243,6 +243,28 @@ class TestPrismMeshInterfaces:
         np.testing.assert_allclose(bm.to_numpy(val0), data["gphi0"], atol=1e-7, rtol=1e-7)
         np.testing.assert_allclose(bm.to_numpy(val1), data["gphi1"], atol=1e-7, rtol=1e-7)
 
+    @pytest.mark.parametrize("backend", ["numpy", "pytorch", "jax"])
+    @pytest.mark.parametrize("data", uniform_refine_data)
+    def test_uniform_refine(self, data, backend):
+        bm.set_backend(backend)
+        node = bm.array([[0.0, 0.0, 0.0],
+                 [1.0, 0.0, 0.0],
+                 [0.0, 1.0, 0.0],
+                 [0.0, 0.0, 1.0],
+                 [1.0, 0.0, 1.0],
+                 [0.0, 1.0, 1.0],
+                 [0.0, 0.0, 2.0],
+                 [1.0, 0.0, 2.0],
+                 [0.0, 1.0, 2.0]])
+        cell = bm.array([[0, 1, 2, 3, 4, 5],
+                        [5, 3, 4, 8, 6, 7]])
+        mesh = PrismMesh(node, cell)
+        mesh.uniform_refine()
+        node = mesh.entity('node')
+        cell = mesh.entity('cell')
+        np.testing.assert_allclose(bm.to_numpy(node), data["node"], atol=1e-7, rtol=1e-7)
+        np.testing.assert_allclose(bm.to_numpy(cell), data["cell"], atol=1e-7, rtol=1e-7)
+
 if __name__ == "__main__":
     # pytest.main(["./test_prism_mesh.py", "-k", "test_init"])
     # pytest.main(["./test_prism_mesh.py", "-k", "test_from_one_prism"])
@@ -255,4 +277,5 @@ if __name__ == "__main__":
     # pytest.main(["./test_prism_mesh.py", "-k", "test_shape_function"])
     # pytest.main(["./test_prism_mesh.py", "-k", "test_jacobi_matrix"])
     # pytest.main(["./test_prism_mesh.py", "-k", "test_grad_shape_function"])
+    # pytest.main(["./test_prism_mesh.py", "-k", "test_uniform_refine"])
     pytest.main(["./test_prism_mesh.py"])
