@@ -1,6 +1,6 @@
 from fealpy.backend import bm
 import argparse
-from fealpy.model.mesher.hollowblock_mesher import HollowBlockMesher
+from fealpy.mesher import HollowBlockMesher
 
 # Argument parsing
 parser = argparse.ArgumentParser(description=
@@ -60,4 +60,5 @@ from fealpy.backend import bm
 bm.set_backend(options['backend'])
 model = HollowBlockMesher(options)
 model.get_options()
+model.get_holes(0)
 couple = model.get_coupling_lines((1,2))

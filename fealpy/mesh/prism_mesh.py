@@ -26,10 +26,10 @@ class PrismMesh(HomogeneousMesh, Plotable):
             (0, 3), (1, 4), (2, 5),
             (3, 4), (4, 5), (3, 5)], **kwargs)
         self.localFace = bm.array([
-            (0, 2, 1, -1), (3, 4, 5, -1), # bottom and top faces
-            (0, 1, 4,  3), (1, 2, 5,  4), (0, 3, 5, 2)], **kwargs)
+            (0, 2, 1, 1), (3, 4, 5, 5), # bottom and top faces
+            (0, 1, 4, 3), (1, 2, 5, 4), (0, 3, 5, 2)], **kwargs)
         self.localFace2edge = bm.array([
-            (1, 0, 2, -1), (7, 8, 6, -1), 
+            (1, 0, 2, 2), (7, 8, 6, 6), 
             (0, 4, 6,  3), (1, 5, 7,  4), (3, 8, 5, 2)], **kwargs)
         self.localEdge2face = bm.array([
             [2, 0], [3, 0], [0, 4],
@@ -43,6 +43,11 @@ class PrismMesh(HomogeneousMesh, Plotable):
         self.facedata = {}
         self.celldata = {}
         self.meshdata = {}
+
+    def construct(self):
+        super().construct()
+        row = bm.concat([self.cell2face[:, 0], self.cell2face[:, 1]], axis=0)
+        self.face = bm.set_at(self.face, (row, -1), self.face[row, -2])
 
     def total_face(self) -> TensorLike:
         """Return all cell faces sorted by localFace.
@@ -131,14 +136,14 @@ class PrismMesh(HomogeneousMesh, Plotable):
     
     # map
     def tface_flag(self, type=None, index: Index=_S):
-        flag = (self.entity('face')[index, -1] < -0.5)
+        flag = (self.entity('face')[index, -1] == self.entity('face')[index, -2])
         if type == 'bool':
             return flag
-        
+
         return bm.where(flag)[0]
 
     def qface_flag(self, type=None, index: Index=_S):
-        flag = ~(self.entity('face')[index, -1] < -0.5)
+        flag = ~(self.entity('face')[index, -1] == self.entity('face')[index, -2])
         if type == 'bool':
             return flag
         
@@ -466,7 +471,6 @@ class PrismMesh(HomogeneousMesh, Plotable):
         cell2face = self.cell_to_face()
         face2edge = self.face_to_edge()
         cell2edge = self.cell_to_edge()
-
         tface2ipoint = self.tri_to_ipoint(p)
         qface2ipoint = self.quad_to_ipoint(p)[0]
         m1 = bm.arange(p+1, device=bm.get_device(cell))
@@ -729,12 +733,6 @@ class PrismMesh(HomogeneousMesh, Plotable):
             return G, J, gphi
         
     # topology
-    def face_to_edge(self, index: Index=_S):
-        face2edge = super().face_to_edge()
-        face = self.entity('face')
-        flag = bm.where(face[:, -1] < 0)
-        face2edge = bm.set_at(face2edge, (flag[0], -1), -1)
-        return face2edge[index]
     
     ## @ingroup MeshGenerators
     @classmethod
