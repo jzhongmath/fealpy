@@ -332,4 +332,3 @@ class TensorPrismMesh(HomogeneousMesh, Plotable):
             return qf1 
     
 
-

@@ -4,7 +4,7 @@ from fealpy.data import get_data_path
 # Argument parsing
 parser = argparse.ArgumentParser(description=
         """
-        Arbitrary-order finite element method for solving linear elasticity eigenvalue problems
+        Linear finite element method for solving linear elasticity eigenvalue problems
         """)
 
 parser.add_argument('--backend',
@@ -40,12 +40,18 @@ options = vars(parser.parse_args())
 options['mesh_file'] = get_data_path('gear', options['mesh_file'])
 options['shaft_system_file'] = get_data_path('gear', options['shaft_system_file'])
 
-print(options)
-
 from fealpy.backend import bm
 bm.set_backend(options['backend'])
 
+fname = options['mesh_file'].stem + '.vtu' 
+
 from fealpy.csm.fem import GearBoxModalLinearFEMModel
 model = GearBoxModalLinearFEMModel(options)
-model.solve()
-model.post_process()
+PS, PM, NS, dof_nodes, dof_comps = model.construct_system['all']()
+eps = model.solve(PS, PM)
+model.post_process(eps, NS)
+#model.mesh.to_vtk(fname=fname)
+#model.to_mtx(fname=options['mesh_file'].stem+'.mtx', S=PS, M=PM)
+#model.to_abaqus(S=PS, M=PM, dof_nodes=dof_nodes, dof_comps=dof_comps)
+#model.write_abaqus_frequency_input()
+
