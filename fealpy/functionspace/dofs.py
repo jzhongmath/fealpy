@@ -32,19 +32,44 @@ class LinearMeshCFEDof(Generic[_MT]):
         else:
             if (method == 'centroid') | (method is None):
                 index = self.mesh.boundary_face_index()
-                if callable(threshold):
-                    bc = self.mesh.entity_barycenter(TD-1, index=index)
-                    flag = threshold(bc)
-                    index = index[flag]
-                face2dof = self.face_to_dof(index=index) # 只获取指定的面的自由度信息
                 isBdDof = bm.zeros(gdof, dtype=bm.bool, device=bm.get_device(self.mesh))
-                isBdDof = bm.set_at(isBdDof, face2dof, True)
+                
+                if self.mesh.meshtype in ['prism', 'tensorprism']:
+                    if callable(threshold):
+                        tface = self.mesh.tface[index[0]]
+                        qface = self.mesh.qface[index[1]]
+                        bc0 = bm.barycenter(tface, self.mesh.node)
+                        bc1 = bm.barycenter(qface, self.mesh.node)
+                        flag0 = threshold(bc0)
+                        index0 = index[0][flag0]
+                        flag1 = threshold(bc1)
+                        index1 = index[1][flag1]      
+                    
+                    tface2dof = self.mesh.tri_to_ipoint(self.p, index0)
+                    qface2dof = self.mesh.quad_to_ipoint(self.p, index1)
+                    isBdDof = bm.set_at(isBdDof, tface2dof, True)
+                    isBdDof = bm.set_at(isBdDof, qface2dof, True)
+                else:
+                    if callable(threshold):
+                        bc = self.mesh.entity_barycenter(TD-1, index=index)
+                        flag = threshold(bc)
+                        index = index[flag]
+                    face2dof = self.face_to_dof(index=index) # 只获取指定的面的自由度信息
+                    isBdDof = bm.set_at(isBdDof, face2dof, True)
+
             elif method == 'interp':
                 index = self.mesh.boundary_face_index()
-                face2dof = self.face_to_dof(index=index) # 只获取指定的面的自由度信息
-                index_dof = face2dof.flatten()
+                if self.mesh.meshtype in ['prism', 'tensorprism']:
+                    tface2dof = self.mesh.tri_to_ipoint(self.p, index[0])
+                    qface2dof = self.mesh.quad_to_ipoint(self.p, index[1])
+                    index_dof = bm.concat([tface2dof.flatten(), qface2dof.flatten()], axis=0)
+                else:
+                    face2dof = self.face_to_dof(index=index) # 只获取指定的面的自由度信息
+                    index_dof = face2dof.flatten()
+
                 if callable(threshold):
                     ##TODO, index_dof加插值点函数里
+                    # import ipdb;ipdb.set_trace()
                     ipoint = self.mesh.interpolation_points(p=self.p)[index_dof]
                     flag = threshold(ipoint)
                     index_dof = index_dof[flag]

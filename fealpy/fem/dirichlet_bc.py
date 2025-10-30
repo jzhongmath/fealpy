@@ -21,7 +21,6 @@ class DirichletBC():
         self.threshold = threshold
         self.bctype = 'Dirichlet'
         self.method = method
-
         if isinstance(space, tuple):
             self.gdof = bm.array([i.number_of_global_dofs() for i in space])
             if isinstance(threshold, tuple):
@@ -30,14 +29,19 @@ class DirichletBC():
                     self.is_boundary_dof.append(space[i].is_boundary_dof(threshold[i], method=method))
                 self.is_boundary_dof = bm.concatenate(self.is_boundary_dof)
             else:
-                if threshold is None:
-                    self.threshold = [None for i in range(len(space))]
-                    self.is_boundary_dof = [i.is_boundary_dof() for i in space]
-                    self.is_boundary_dof = bm.concatenate(self.is_boundary_dof)
-                else:
-                    index = bm.concatenate((bm.array([0]),bm.cumsum(self.gdof, axis=0)))
-                    self.threshold = [threshold[i:i+1] for i in range(len(index)-1)]
-                    self.is_boundary_dof = threshold 
+                self.is_boundary_dof = []
+                self.is_boundary_dof.append(space[0].is_boundary_dof(threshold, method=method))
+                self.is_boundary_dof.append(bm.zeros((self.gdof[1],), dtype=bool))
+                self.is_boundary_dof = bm.concatenate(self.is_boundary_dof)
+                
+                # if threshold is None:
+                #     self.threshold = [None for i in range(len(space))]
+                #     self.is_boundary_dof = [i.is_boundary_dof() for i in space]
+                #     self.is_boundary_dof = bm.concatenate(self.is_boundary_dof)
+                # else:
+                #     index = bm.concatenate((bm.array([0]),bm.cumsum(self.gdof, axis=0)))
+                #     self.threshold = [threshold[i:i+1] for i in range(len(index)-1)]
+                #     self.is_boundary_dof = threshold 
             self.boundary_dof_index = bm.nonzero(self.is_boundary_dof)[0]
             self.gdof = bm.sum(self.gdof)
         else:
@@ -185,8 +189,13 @@ class DirichletBC():
                     uh.append(suh[:])
                 uh = bm.concatenate(uh)
             else:
-                assert len(gd) == self.gdof
-                uh = gd
+                suh, sidDDdof = self.space[0].boundary_interpolate(gd=gd,
+                                                                    threshold=self.threshold, method=self.method)
+                uh = suh
+                pdof = self.space[1].number_of_global_dofs()
+                uh = bm.concat([uh, bm.zeros(pdof,)], axis=0)
+                # assert len(gd) == self.gdof
+                # uh = gd
         else:
             if uh is None:
                 uh = bm.zeros_like(f)
@@ -307,4 +316,3 @@ def apply_matrix(self, matrix: _ST, *, check=True) -> _ST:
 
         A = CSRTensor(new_crow, new_col, new_values, A.sparse_shape)
     return A
-

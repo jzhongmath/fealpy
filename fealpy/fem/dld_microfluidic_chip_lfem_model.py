@@ -4,7 +4,6 @@ from fealpy.backend import bm
 from fealpy.typing import TensorLike
 from fealpy.decorator import variantmethod, cartesian
 from fealpy.model import ComputationalModel
-from fealpy.model.stokes import StokesPDEDataT
 
 from fealpy.mesh import TriangleMesh, LagrangeTriangleMesh
 from fealpy.mesher import DLDMicrofluidicChipMesher
@@ -12,9 +11,14 @@ from fealpy.geometry.implicit_curve import CircleCurve
 from fealpy.functionspace import functionspace, ParametricLagrangeFESpace, TensorFunctionSpace, LagrangeFESpace
 from fealpy.fem import LinearForm, BilinearForm, BlockForm, LinearBlockForm
 from fealpy.fem import ScalarDiffusionIntegrator as DiffusionIntegrator
-from fealpy.fem import DirichletBC
+from fealpy.fem import DirichletBC, StokesDirichletBC
 from fealpy.fem import PressWorkIntegrator, SourceIntegrator
+from fealpy.solver import StokesLSCDGS, cg, spsolve, transfer
+from fealpy.sparse import spdiags, coo_matrix, csr_matrix
 
+import scipy.sparse as sp
+import scipy.sparse.linalg as lg
+import time
 
 class DLDMicrofluidicChipLFEMModel(ComputationalModel):
     """
@@ -50,7 +54,33 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
             pbar_log=options['pbar_log'],
             log_level=options['log_level']
         )
-        
+        if options is None:
+            options = {} 
+            
+        self.level = options.get('level', 4)
+
+        self.options = options
+        self.x0 = options.get('x0', None)
+        self.tol = options.get('tol', 1e-8)  
+        self.maxIt = options.get('solvermaxit', 200)  
+        self.N0 = options.get('N0', 500)
+        self.mu = options.get('smoothingstep', 1)
+
+        self.cycle_type = options.get('cycle_type', 'VCYCLE')
+        self.smoothing_times = options.get('smoothing_times', 1)
+        self.preconditioner = options.get('preconditioner', 'none')
+        self.coarsegridsolver = options.get('coarsegridsolver', 'direct')
+        self.solver = options.get('solver', 'mg')
+
+        self.thickness = options.get('thickness', 0.1)
+
+        self.coarse_time = 0
+        self.smoothing_time = 0
+        self.coarse_count = 0
+        self.smoothing_count = 0
+
+        self.mul_time = 0
+
     def set_init_mesher(self, mesher: DLDMicrofluidicChipMesher):
         """
         Set the initial mesh for the simulation.
@@ -58,7 +88,11 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         Parameters:
             mesh: The computational mesh object
         """
-        self.mesh = mesher.mesh
+        mesh = mesher.mesh
+        self.mesh0 = TriangleMesh(mesh.entity('node'), mesh.entity('cell'))
+        self.mesh1 = TriangleMesh(mesh.entity('node'), mesh.entity('cell'))
+        mesh.uniform_refine(self.level-1)
+        self.mesh = mesh
         self.radius = mesher.radius
         self.centers = mesher.centers
         self.boundary = mesher.boundary
@@ -206,10 +240,10 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         Assemble the linear system for the Stokes equations.
         """
         GD = self.mesh.geo_dimension()
-
         self.uspace = functionspace(self.mesh, ('Lagrange', self.p), shape=(GD, -1))
         self.pspace = functionspace(self.mesh, ('Lagrange', self.p-1))
-
+        print(self.uspace.number_of_global_dofs() + self.pspace.number_of_global_dofs())
+        
         A00 = BilinearForm(self.uspace)
         self.BD = DiffusionIntegrator()
         self.BD.coef = 1.0
@@ -218,13 +252,11 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         self.BP = PressWorkIntegrator()
         self.BP.coef = -1.0
         A01.add_integrator(self.BP)
-        A = BlockForm([[A00, A01], [A01.T, None]])
-
+        
         L0 = LinearForm(self.uspace)
         L1 = LinearForm(self.pspace)
-        L = LinearBlockForm([L0, L1])
-
-        return A, L
+        
+        return A00, A01, L0, L1
 
     @linear_system.register('isopara')
     def linear_system(self):
@@ -259,49 +291,307 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
 
         return A, L
 
+    def setup(self, A, B):
+        """Compute restriction and interpolation operators.
+        """
+        A = A.to_scipy()
+        B = B.to_scipy()
+        level = self.level
+        Ai = [None] * level
+        Bi = [None] * level
+        bigAi = [None] * level
+        
+        Ai[-1] = A
+        Bi[-1] = B
+        
+        bigAi[-1] = sp.bmat([[A, B.T],[B,None]]).tocsr()
+
+        Nu = bm.zeros((level,), dtype=bm.int32)
+        Np = bm.zeros((level,), dtype=bm.int32)
+        Nu[-1] = Ai[-1].shape[0] // 2
+        Np[-1] = Bi[-1].shape[0]
+
+        # Compute Pro and Res of u and p.
+        Pro_p = self.mesh0.uniform_refine(n=self.level-1, returnim=True)[::-1]
+        Pro_u = transfer(self.mesh1, self.level)
+
+        Res_u = [None] * level
+        Res_p = [None] * level
+
+        for i in range(self.level - 1):
+            Pro_u[i] = sp.block_diag([Pro_u[i].to_scipy(),Pro_u[i].to_scipy()])
+            Pro_p[i] = Pro_p[i].to_scipy()
+            Res_u[i] = Pro_u[i].T
+            Res_p[i] = Pro_p[i].T
+        
+        for j in range(level - 1, 0, -1):
+            # Ac = Res*Af*Pro
+            Ai[j-1] = Res_u[j-1] @ Ai[j] @ Pro_u[j-1]
+            Bi[j-1] = Res_p[j-1] @ Bi[j] @ Pro_u[j-1]
+            Nu[j-1] = Ai[j-1].shape[0] // 2
+            Np[j-1] = Bi[j-1].shape[0]
+            bigAi[j-1] = (sp.bmat([[Ai[j-1], Bi[j-1].T],[Bi[j-1], None]]).tocsr())
+
+        Ndof = 2 * Nu + Np
+        auxMat = [None] * level
+        
+        self.Pro_u = Pro_u
+        self.Pro_p = Pro_p
+        self.Res_u = Res_u
+        self.Res_p = Res_p
+
+        for k in range(1, level): 
+            Bt = Bi[k].T
+            BBt = Bi[k] @ Bt
+            BABt = Bi[k] @ Ai[k] @ Bt
+            Su = sp.tril(Ai[k]).tocsr()
+            Sp = sp.tril(BBt).tocsr()
+            Spt = sp.triu(BBt).tocsr()
+            DSp = BBt.diagonal()
+            auxMat[k] = {
+                'Bt': Bt,
+                'BBt': BBt,
+                'BABt': BABt,
+                'Su': Su,
+                'Spt': Spt,
+                'Sp': Sp,
+                'DSp': DSp
+            }
+        self.Ai = Ai
+        self.Bi = Bi
+        self.Nu = Nu
+        self.Np = Np
+        self.Ndof = Ndof
+        self.bigAi = bigAi
+        self.auxMat = auxMat
+
+    def vcycle(self, r, J=None):
+        if J is None:
+            J = self.level - 1
+        if J == 0:
+            import pyamg
+            start = time.time()
+            # mg = pyamg.ruge_stuben_solver(self.bigAi[J])
+            # e = mg.solve(r)
+            e = spsolve(self.bigAi[J], r)
+            self.coarse_count += 1
+            self.coarse_time += time.time() - start
+            return e
+        
+        Pro_u = self.Pro_u[J-1]
+        Pro_p = self.Pro_p[J-1]
+        Res_u = self.Res_u[J-1]
+        Res_p = self.Res_p[J-1]
+        
+        ru = r[:2*self.Nu[J]]
+        rp = r[2*self.Nu[J]:]
+        
+        # pre-smoothing
+        eu, ep = self.smoothing(bm.zeros((2*self.Nu[J],)),bm.zeros((self.Np[J],)),ru,rp,J)
+        if self.smoothing_times == 2:
+            eu, ep = self.smoothing(eu,ep,ru,rp,J)
+
+        # form residual and restrict onto coarse grid
+        rru = ru - self.Ai[J] @ eu - self.Bi[J].T @ ep
+        rrp = rp - self.Bi[J] @ eu
+
+        ruc = Res_u @ rru
+        rpc = Res_p @ rrp
+        
+        # coarse grid correction
+        rc = bm.concat([ruc, rpc], axis=0)
+        ec = self.vcycle(rc, J-1)
+
+        # correction on the fine grid
+        tempeu = Pro_u @ ec[:2*self.Nu[J-1]]
+        tempep = Pro_p @ ec[2*self.Nu[J-1]:]
+        eu = tempeu + eu
+        ep = tempep + ep
+
+        # post-smoothing
+        eu, ep = self.smoothing(eu,ep,ru,rp,J)
+        if self.smoothing_times == 2:
+            eu, ep = self.smoothing(eu,ep,ru,rp,J)
+        e = bm.concat([eu, ep], axis=0)
+        return e       
+
+    def wcycle(self, r, J=None): 
+        if J is None:
+            J = self.level - 1
+        if J == 0:
+            e = bm.zeros_like(r)
+            start = time.time()
+            # e[:-1] = lg.spsolve(self.bigAi[J].tocsr()[:-1, :-1], r[:-1])
+            e = lg.spsolve(self.bigAi[J].tocsr(), r)
+            self.coarse_time += time.time() - start
+            self.coarse_count += 1
+            return e
+        
+        Res_u = self.Pro_u[J-1].T
+        Res_p = self.Pro_p[J-1].T
+        
+        ru = r[:2*self.Nu[J]]
+        rp = r[2*self.Nu[J]:]
+        
+        # pre-smoothing
+        eu, ep = self.smoothing(bm.zeros((2*self.Nu[J],)),bm.zeros((self.Np[J],)),ru,rp,J)
+        if self.smoothing_times == 2:
+            eu, ep = self.smoothing(eu,ep,ru,rp,J)
+
+        # form residual and restrict onto coarse grid
+        rru = ru - self.Ai[J] @ eu - self.Bi[J].T @ ep
+        rrp = rp - self.Bi[J] @ eu
+
+        ruc = (Res_u @ rru.reshape(2, -1).T).reshape(-1, order='F')
+        rpc = Res_p @ rrp
+        
+        # coarse grid correction
+        rc = bm.concat([ruc, rpc], axis=0)
+        ec = self.wcycle(rc, J-1)
+        # once more for w-cycle
+        ec = ec + self.wcycle(rc - self.bigAi[J-1] @ ec,J-1)
+
+        # correction on the fine grid
+        tempeu = (self.Pro_u[J-1] @ (ec[:2*self.Nu[J-1]].reshape(2, -1).T)).reshape(-1, order='F')
+        tempep = self.Pro_p[J-1] @ ec[2*self.Nu[J-1]:]
+        eu = tempeu + eu
+        ep = tempep + ep
+
+        # post-smoothing
+        eu, ep = self.smoothing(eu,ep,ru,rp,J)
+        if self.smoothing_times == 2:
+            eu, ep = self.smoothing(eu,ep,ru,rp,J)
+        e = bm.concat([eu, ep], axis=0)
+        return e       
+    
+    def smoothing(self, u, p, f, g, J):
+        """Solve LUe = r.
+        """
+        auxMat = self.auxMat[J]
+        smootherOpt = self.options
+        A = self.Ai[J]
+        B = self.Bi[J]
+        start = time.time()
+        smoother = StokesLSCDGS(auxMat,smootherOpt)
+        u, p, self.mul_time = smoother.run(u,p,f,g,A,B,self.mul_time)
+        t = time.time() - start
+        print(t)
+        self.smoothing_time += t
+        self.smoothing_count += 1
+        return u, p
+
     @variantmethod('direct')
-    def solve(self, A, F, solver='scipy'):
+    def solve(self, A, F, solver='mumps'):
         """
         Solve the linear system using direct method.
         """
-        from fealpy.solver import spsolve
         self.solve_str = 'direct'
-        return spsolve(A, F, solver = solver)
+        return spsolve(A, F, solver = 'mumps')
+
+    @solve.register('mg')
+    def solve(self, A, B, f, g):
+        # initial set up
+        u = bm.zeros_like(f)
+        p = bm.zeros_like(g)
+        self.setup(A, B.T)
+        
+        bigF = bm.concat([f,g-bm.mean(g)], axis=0)
+        bigu = bm.concat([u, p], axis=0)
+        bigr = bigF - self.bigAi[-1] @ bigu
+
+        k = 0
+        nb = bm.linalg.norm(bigF)
+        err = bm.zeros((self.maxIt, 1), dtype=bm.float64)
+        err[0] = bm.linalg.norm(bigr) / nb
+        print(f'2. set_up完成, 开始执行多重网格方法\n')
+        start = time.time()
+        while (bm.max(err[k]) > self.tol) & (k < self.maxIt - 1):
+            k = k + 1
+            if self.cycle_type == 'VCYCLE':
+                bigerru = self.vcycle(bigr)
+            elif self.cycle_type == 'WCYCLE':
+                bigerru = self.wcycle(bigr)
+            bigu = bigu + bigerru
+            bigr = bigr - self.bigAi[-1] @ bigerru
+
+            # compute the relative error
+            err[k] = bm.linalg.norm(bigr) / nb
+
+            print(
+                f'MG {self.cycle_type} iter: {k:2d},   '
+                f'err = {err[k][0]:8.4e},   '
+                f'Ndof = {self.Ndof[-1]}\n'
+            )
+        err = err[:k+1]
+        itStep = k
+        u = bigu[:2*self.Nu[-1]]
+        p = bigu[2*self.Nu[-1]:]
+        cost = time.time() - start
+        # Output
+        print(f"iter: {itStep:2.0f},  "
+            f"err = {err[-1][0]:8.4e}\n"
+            f"level = {self.level}\n"
+            f"coarse grid: {self.Bi[0].shape[0]:2.0f}\n"
+            f"coarse dofs: {self.Ndof[0]:2.0f}\n"
+            f"total time in coarsest grid: {self.coarse_time}\n"
+            f"total time: {cost}\n"
+            f"points: {self.coarse_time / cost},  "
+            f"coarse count: {self.coarse_count}")
+
+        if k > self.maxIt:
+            print("NOTE: the iterative method does not converge!")
+
+        return u, p
 
     @variantmethod('one_step')
     def run(self):
-        """
-        Run a single step of the simulation.
-        """
-        BForm, LForm = self.linear_system['iso']()
-        A = BForm.assembly()
-        L = LForm.assembly()    
-        BC = DirichletBC(
-            (self.uspace, self.pspace),
-            gd=(self.velocity_dirichlet, self.pressure_dirichlet),
-            threshold=(self.is_velocity_boundary, self.is_pressure_boundary),
-            method='interp'
-        )
-        A, L = BC.apply(A, L)
-        from fealpy.solver import cg
-        x = cg(A, L)
-        ugdof = self.uspace.number_of_global_dofs()
-        uh = x[:ugdof]
-        ph = x[ugdof:]
+        A00, A01, L0, L1 = self.linear_system()
+        pdof = self.pspace.number_of_global_dofs()
+        if self.solver == 'direct':
+            bigA0 = BlockForm([[A00, A01], [A01.T, None]]).assembly()
+            bigF0 = LinearBlockForm([L0, L1]).assembly()
 
+            BC = DirichletBC(
+                (self.uspace, self.pspace), 
+                gd=self.velocity_dirichlet,
+                threshold=self.is_velocity_boundary,
+                method='interp'
+            )
+
+            bigA0, bigF0 = BC.apply(bigA0, bigF0)
+            bigF0[-pdof:] = bigF0[-pdof:] - bm.mean(bigF0[-pdof:])
+            bigA0 = bigA0.to_scipy()
+            import time
+            from fealpy.solver import gmres, lgmres
+            start = time.time()
+            x = spsolve(bigA0, bigF0, 'mumps')
+            # x, _ = gmres(bigA0, bigF0)
+            print(f'direct time: {time.time() - start}')
+            uh = x[:-pdof]
+            ph = x[-pdof:]
+
+        elif self.solver == 'mg':
+            A = A00.assembly()
+            B = A01.assembly()
+            f = L0.assembly()
+            g = L1.assembly()
+            StokesBC = StokesDirichletBC(
+                (self.uspace, self.pspace),
+                gd=self.velocity_dirichlet,
+                threshold=self.is_velocity_boundary,
+                method='interp'
+            )
+
+            A, B, f, g = StokesBC.apply(A, B, f, g)
+            print(f'1. 组装线性系统完成')
+            uh, ph = self.solve['mg'](A, B, f, g)        
+        
+        print(f'smoothing_time:{self.smoothing_time}')
+        print(f'smoothing_count:{self.smoothing_count}')
+        print(f'spsolve_triangular_time:{self.mul_time}')
         self.post_process(uh ,ph)
-        return uh, ph
     
     def post_process(self, uh, ph):
-        import matplotlib.pyplot as plt
-
-        # uh = uh.reshape(2, -1).T 
-        # points = self.uspace.interpolation_points()
-        # fig, ax = plt.subplots(figsize=(8,6))
-        # self.mesh.add_plot(ax)
-        # ax.quiver(points[:,0], points[:,1], uh[:,0], uh[:,1])
-        # ax.set_title("Velocity field")
-        # plt.show()
         self.mesh.nodedata['ph'] = ph
         self.mesh.nodedata['uh'] = uh.reshape(2,-1).T
         self.mesh.to_vtk('dld_chip.vtu')

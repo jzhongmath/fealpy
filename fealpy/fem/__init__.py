@@ -28,6 +28,7 @@ from .optimal_control_integrator import OPCIntegrator
 from .optimal_control_source_integrator import OPCSIntegrator
 from .curl_jump_penalty_intergrator import CurlJumpPenaltyIntergrator
 from .jump_penalty_intergrator import JumpPenaltyIntergrator
+from .coupling_mass_integrator import CouplingMassIntegrator
 
 ### Cell Source
 from .cell_source_integrator import CellSourceIntegrator
@@ -52,6 +53,7 @@ ScalarRobinSourceIntegrator = BoundaryFaceSourceIntegrator
 ### Dirichlet BC
 from .dirichlet_bc import DirichletBC
 from .dirichlet_bc_operator import DirichletBCOperator
+from .stokes_dirichlet_bc import StokesDirichletBC
 
 ### recovery estimate
 from .recovery_alg import RecoveryAlg
@@ -75,3 +77,4 @@ from .dld_microfluidic_chip_lfem_model import DLDMicrofluidicChipLFEMModel
 from .dld_microfluidic_chip_lfem_model_3d import DLDMicrofluidicChipLFEMModel3D
 from .curlcurl_upml_model import CurlCurlUPMLModel
 from .mgtensor_possion_lfem_model import MGTensorPossionLFEMModel
+from .mgtensor_stokes_lfem_model import MGTensorStokesLFEMModel

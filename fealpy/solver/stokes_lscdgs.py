@@ -14,12 +14,10 @@ import time
 
 class StokesLSCDGS():
     def __init__(self, 
-        # u,p,f,g,A,B,
         auxMat,
         smootherOpt
     ):  
         self.set_up(auxMat, smootherOpt)
-        # self.run(u,p,f,g,A,B)
     
     def set_up(self, auxMat, smootherOpt):
         self.smoothingstep = smootherOpt.get('smoothingstep', 2)
@@ -43,13 +41,6 @@ class StokesLSCDGS():
         self.Spt = auxMat.get('Spt')
         self.DSp = auxMat.get('DSp')
 
-        # self.elem = elem
-        # self.Ai = Ai
-        # self.Si = Si
-        # self.SSi = SSi
-        # self.Res = Res
-        # self.Pro = Pro
-
     def run(self, u,p,f,g,A,B,mul_time):
         for _ in range(self.smoothingstep):
             # Step 1: relax Momentum eqns
@@ -60,7 +51,7 @@ class StokesLSCDGS():
             # u = u + pyamg.ruge_stuben_solver(self.Su).solve(r, maxiter=1)
             # u = u + spsolve_triangular(self.Su, r, lower=True)
             u = u + tfqmr(self.Su, r, maxiter=3)[0]
-            # u = u + 0.5*r / self.Su
+
             mul_time += time.time() - start
             # Step 2: relax transformed Continuity eqns
             rp = g - B @ u
@@ -73,8 +64,8 @@ class StokesLSCDGS():
                 start = time.time()
                 # mg = pyamg.ruge_stuben_solver(self.Sp)
                 # dq = mg.solve(rp, maxiter=3)
-                dq = tfqmr(self.Sp, rp, rtol=1e-1)[0]
-                # dq = spsolve_triangular(self.Sp, rp, lower=True)
+                # dq = tfqmr(self.Sp, rp, rtol=1e-1)[0]
+                dq = spsolve_triangular(self.Sp, rp, lower=True)
                 mul_time += time.time() - start
             elif self.smoothingSp == 'VCYCLE':
                 pass
@@ -92,9 +83,9 @@ class StokesLSCDGS():
             elif self.smoothingbarSp == 'GS':
                 # dp = self.Spt / dq
                 start = time.time()
-                # dp = spsolve_triangular(self.Spt, dq, lower=False)
+                dp = spsolve_triangular(self.Spt, dq, lower=False)
                 # dp = pyamg.ruge_stuben_solver(self.Spt).solve(dq, maxiter=1)
-                dp = tfqmr(self.Spt, dq, maxiter=3)[0]
+                # dp = tfqmr(self.Spt, dq, maxiter=3)[0]
                 mul_time += time.time() - start
             elif self.smoothingbarSp == 'VCYCLE':
                 pass

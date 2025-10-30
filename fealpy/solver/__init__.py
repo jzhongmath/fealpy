@@ -12,3 +12,7 @@ from .direct_solver_manger import DirectSolverManager
 from .iterative_solver_manger import IterativeSolverManager
 from .bicgstab import bicgstab
 from .bicg import bicg
+from .mg import mg
+from .stokes_lscdgs import StokesLSCDGS
+
+from .transferP2red import transfer
