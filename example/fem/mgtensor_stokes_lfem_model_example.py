@@ -31,7 +31,7 @@ parser.add_argument('--outlet_length',
     help = "Length of the outlet section.")
 
 parser.add_argument('--radius',
-    default = 1 / (3 * 5), type = float,
+    default = 1 / (3 * 2), type = float,
     help = "Radius of the pillars.")
 
 parser.add_argument('--n_rows',
@@ -71,7 +71,7 @@ parser.add_argument('--n',
         help='Degree of Lagrange finite element space, default is 2.')
 
 parser.add_argument('--level',
-        default=4, type=int,
+        default=1, type=int,
         help='Degree of Lagrange finite element space, default is 2.')
 
 parser.add_argument('--pbar_log',
@@ -108,7 +108,7 @@ gmsh.finalize()
 n = options['n']
 level = options['level']
 # imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=2*(level - 1)*n)
-imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=4)
+imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=3)
 
 
 model = MGTensorStokesLFEMModel(options=options)

@@ -73,9 +73,9 @@ class TensorPrismMesh(HomogeneousMesh, Plotable):
         # fig = plt.figure()
         # axes = fig.add_subplot(111, projection='3d')
         # pm.add_plot(axes, cellcolor="#80e673")
-        # # pm.find_node(axes, node=ipoints,
-        # #                showindex=True, color='r', fontsize='20')
-        # # pm.find_cell(axes=axes, showindex=True, fontsize='20')
+        # pm.find_node(axes, node=ipoints,
+        #                showindex=True, color='r', fontsize='5')
+        # pm.find_cell(axes=axes, showindex=True, fontsize='20')
         # plt.show()
 
         self.tface = all_cell

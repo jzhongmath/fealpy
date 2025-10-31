@@ -16,7 +16,7 @@ def indofP2(mesh: TriangleMesh, threshold=None):
     
     index_dof = bm.arange(len(points))[isDDof]
     bd_point = points[isDDof] 
-    flag = threshold(bd_point)
+    flag = threshold(bd_point, dim=2)
     index_dof = index_dof[flag]
 
     bd_flag = bm.zeros((len(points),), dtype=bm.bool)

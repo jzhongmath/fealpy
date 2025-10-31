@@ -90,6 +90,7 @@ class StokesOperator(LinearOperator):
         inflag_p = self.inflag_p
         inflag_uz = self.inflag_uz
         inflag_pz = self.inflag_pz
+        
         if inflag_u is not None:
             self.fix = False
             self.res_mat = True
@@ -215,6 +216,19 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         self.mesh1 = TriangleMesh(tmesh.entity('node'), tmesh.entity('cell'))
         tmesh.uniform_refine(self.level-1)
         self.tmesh = tmesh
+        
+        # import matplotlib.pyplot as plt
+        # from fealpy.mesh import TensorPrismMesh
+        # mesh = TensorPrismMesh(self.tmesh, imesh)
+        
+        # ipoints = tmesh.interpolation_points(p=2)
+        # fig = plt.figure()
+        # axes = fig.add_subplot(111)
+        # mesh.add_plot(axes)
+        # mesh.find_node(axes, node=ipoints, 
+        #             showindex=True, color='r', fontsize='10')
+        # tmesh.find_cell(axes, showindex=True, fontsize='35')
+        # plt.show()
 
         self.radius = mesher.radius
         self.centers = mesher.centers
@@ -337,12 +351,14 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         return bm.any(cond, axis=1)
     
     @cartesian
-    def is_velocity_boundary(self, p: TensorLike) -> TensorLike:
+    def is_velocity_boundary(self, p: TensorLike, dim=3) -> TensorLike:
         """Check if point where velocity is defined is on boundary."""
         inlet = self.is_inlet_boundary(p)
         wall = self.is_wall_boundary(p)
         top_or_bottom = self.is_top_or_bottom(p)
         obstacle = self.is_obstacle_boundary(p)
+        if dim == 2:
+            return inlet | wall | obstacle
         return inlet | wall | top_or_bottom | obstacle
     
     @cartesian
@@ -375,11 +391,11 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         """
         Assemble the linear system for the Stokes equations.
         """
-        from fealpy.mesh import TensorPrismMesh
-        self.mesh = TensorPrismMesh(self.tmesh, self.imesh)
-
-        self.uspace = functionspace(self.mesh, ('Lagrange', 2), shape=(3, -1))
-        self.pspace = functionspace(self.mesh, ('Lagrange', 1))
+        # from fealpy.mesh import TensorPrismMesh
+        # self.mesh = TensorPrismMesh(self.tmesh, self.imesh)
+        
+        # self.uspace = functionspace(self.mesh, ('Lagrange', 2), shape=(3, -1))
+        # self.pspace = functionspace(self.mesh, ('Lagrange', 1))
 
         self.int_space0 = LagrangeFESpace(self.imesh, p=1)
         self.int_space1 = LagrangeFESpace(self.imesh, p=2)
@@ -494,7 +510,6 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             val = gd[1-i](bd_point[flag])
             
             if i == 1:
-                print(index_dof.shape)
                 index_dof = bm.concat([index_dof, index_dof + len(points[1]), 
                                     index_dof + 2*len(points[1])], axis=0)
                 val = val.reshape(-1, order='F')
@@ -503,7 +518,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             isBdDof = bm.zeros(self.n_A, dtype=bm.bool)
             isBdDof = bm.set_at(isBdDof, index_dof, True)
             uh = bm.set_at(uh, (..., isBdDof), val)
-        print(BdDof[1].shape)
+
         BdDof = bm.concat([BdDof[1], BdDof[0]], axis=0)
         F = F - stokes_operator @ uh
         F = bm.set_at(F, BdDof, uh[BdDof])
@@ -519,9 +534,8 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         bm.set_at(isDDof, bm.arange(len(flag)), flag)
         op.inflag_pz = ~flag
         op.inflag_uz = ~isDDof
-        import ipdb;ipdb.set_trace()
         op.inflag_u = indofP2(self.tmesh, threshold=self.is_velocity_boundary)
-        print(op.inflag_u.sum())
+
         op.inflag_p = indofP1(self.tmesh, threshold=self.is_pressure_boundary)
         op.set_up()
         Ax = op.Ax
@@ -757,7 +771,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         # initial set up
         
         self.setup(stokes_operator)
-        
+        import ipdb;ipdb.set_trace()
         bigF = F
         bigu = bm.zeros_like(F)
         bigr = bigF - self.bigAi[-1] @ bigu
