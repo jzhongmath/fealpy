@@ -1,10 +1,34 @@
-
+from typing import Optional, Tuple, Callable, Union, TypeVar
+from ..typing import TensorLike
 from ..backend import bm
 from ..mesh import TriangleMesh
+from ..functionspace import LagrangeFESpace
 from ..sparse import csr_matrix
 
-def transferP2red(mesh: TriangleMesh, level:int, threshold:None):
+
+CoefLike = Union[float, int, TensorLike, Callable[..., TensorLike]]
+
+def indofP2(mesh: TriangleMesh, threshold=None):
+        space = LagrangeFESpace(mesh, p=2)
+        isDDof = space.is_boundary_dof()
+        tip = mesh.interpolation_points(p=2)
+        points = bm.concat([tip,bm.zeros((len(tip),1), dtype=bm.float64)], axis=1)
+        
+        index_dof = bm.arange(len(points))[isDDof]
+        bd_point = points[isDDof] 
+        flag = threshold(bd_point)
+        index_dof = index_dof[flag]
+
+        bd_flag = bm.zeros((len(points),), dtype=bm.bool)
+        bm.set_at(bd_flag, index_dof, True)
+
+        return ~bd_flag
+
+def transferP2red(mesh: TriangleMesh, level:int, threshold:Optional[Tuple[CoefLike,...]]=None):
     # input: the coaresest grid
+    if threshold == 'None':
+            return mesh.uniform_refine(n=level-1, returnim=True)
+
     def P2red(NTc, c2i0, c2i1, Ndofc, Ndoff):
         # we just consider the middle points in fine edges. 
         elem2node2f = bm.zeros((NTc, 9), dtype=bm.int32)
@@ -83,10 +107,17 @@ def transferP2red(mesh: TriangleMesh, level:int, threshold:None):
         NTc = mesh.number_of_cells()
         c2i0 = mesh.cell_to_ipoint(p=2)
         Ndofc = mesh.number_of_global_ipoints(p=2)
-        
+
+        if threshold is not None:
+            flag0 = indofP2(mesh, threshold)
         mesh.uniform_refine()
+        if threshold is not None:
+            flag1 = indofP2(mesh, threshold)
         c2i1 = mesh.cell_to_ipoint(p=2)
         Ndoff = mesh.number_of_global_ipoints(p=2)
-        Pro_u.append(P2red(NTc, c2i0, c2i1, Ndofc, Ndoff))
+        P = P2red(NTc, c2i0, c2i1, Ndofc, Ndoff)
+        if threshold != None:
+            P = P.to_scipy()[flag1][:,flag0]
+        Pro_u.append(P)
 
     return Pro_u

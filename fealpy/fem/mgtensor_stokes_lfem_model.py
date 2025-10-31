@@ -10,12 +10,11 @@ from fealpy.functionspace import LagrangeFESpace, functionspace
 from fealpy.fem import BilinearForm, LinearForm, DirichletBC, BlockForm, LinearBlockForm
 from fealpy.fem import ScalarDiffusionIntegrator, ScalarMassIntegrator, PressWorkIntegrator, CouplingMassIntegrator
 from fealpy.model import PDEModelManager, ComputationalModel
-from fealpy.model.mgtensor_possion import MGTensorPossionPDEDataT
 
 from fealpy.mesher import DLDMicrofluidicChipMesher
 
 from fealpy.sparse import spdiags, coo_matrix, csr_matrix
-from fealpy.solver import cg, spsolve, transferP1red, transferP2red, StokesLSCDGS
+from fealpy.solver import cg, spsolve, transferP1red, transferP2red, StokesLSCDGS, indofP1, indofP2
 from fealpy.utils import timer
 
 import scipy.sparse as sp
@@ -77,6 +76,24 @@ class StokesOperator(LinearOperator):
         self.Bz = Bz.assembly().to_scipy().T
         self.Mx_ = Mx_.assembly().to_scipy().T
         self.Mz_ = Mz_.assembly().to_scipy().T
+        self.inflag_u = None
+        self.inflag_p = None
+        self.BdDof = None
+        self.fix = False
+        self.res_mat = False
+        self.set_up()
+
+    def set_up(self):
+        inflag_u = self.inflag_u
+        inflag_p = self.inflag_p
+        if inflag_u is not None:
+            self.fix = False
+            self.res_mat = True
+            self.Ax = self.Ax[inflag_u][:,inflag_u]
+            self.Mx = self.Mx[inflag_u][:,inflag_u]
+            if inflag_u is not None:
+                self.Bx = self.Bx[inflag_p][:,bm.concat([inflag_u,inflag_u], axis=0)]
+                self.Mx_ = self.Mx_[inflag_p][:,inflag_u]
 
         self.n_Ax = self.Ax.shape[0]
         self.n_Mz = self.Mz.shape[0]
@@ -98,9 +115,6 @@ class StokesOperator(LinearOperator):
 
         self.n_A = 3 * self.n_u0 + self.n_p
         self.shape = self.n_A, self.n_A
-
-        self.BdDof = None
-        self.fix = False
 
     def __matmul__(self, x):
         v = bm.copy(x)
@@ -134,7 +148,7 @@ class StokesOperator(LinearOperator):
         y = bm.concat([l1, l2, l3], axis=0)
         if self.fix:
             bm.set_at(y, self.BdDof, val) 
-        else:
+        elif not self.res_mat:
             self.fix = True
         return y
 
@@ -183,7 +197,12 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         Parameters:
             mesh: The computational mesh object
         """
-        self.tmesh = mesher.mesh
+        tmesh = mesher.mesh
+        self.mesh0 = TriangleMesh(tmesh.entity('node'), tmesh.entity('cell'))
+        self.mesh1 = TriangleMesh(tmesh.entity('node'), tmesh.entity('cell'))
+        tmesh.uniform_refine(self.level-1)
+        self.tmesh = tmesh
+
         self.radius = mesher.radius
         self.centers = mesher.centers
         self.boundary = mesher.boundary
@@ -457,11 +476,12 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             flag = threshold[1-i](bd_point)
             index_dof = index_dof[flag]
             val = gd[1-i](bd_point[flag])
-
+            
             if i == 1:
                 index_dof = bm.concat([index_dof, index_dof + len(points[1]), 
                                     index_dof + 2*len(points[1])], axis=0)
                 val = val.reshape(-1, order='F')
+
             BdDof.append(index_dof)
             isBdDof = bm.zeros(self.n_A, dtype=bm.bool)
             isBdDof = bm.set_at(isBdDof, index_dof, True)
@@ -473,70 +493,87 @@ class MGTensorStokesLFEMModel(ComputationalModel):
 
         return BdDof, F
 
-    def set_mesh(self, tmesh: TriangleMesh, imesh: IntervalMesh):
-        self.tmesh = tmesh
-        self.IM = tmesh.uniform_refine(n=self.level-1, returnim=True)
-        self.imesh = imesh
-        self.Ny = self.imesh.number_of_nodes()
-        self.Nx = self.tmesh.number_of_nodes()
-        self.NxNy = self.Nx * self.Ny
-        
-        
-        tnode = tmesh.entity('node')
-        inode = imesh.entity('node')
-        
-        self.node = bm.concat([bm.repeat(tnode, inode.shape[0], axis=0), 
-                          bm.tile(inode.T, tnode.shape[0]).T], axis=1)
-
-    def setup(self, Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_):
+    def setup(self, op: StokesOperator):
         """Compute restriction and interpolation operators.
         """
-        A = A.to_scipy()
-        B = B.to_scipy()
+        op.inflag_u = indofP2(self.tmesh, threshold=self.is_velocity_boundary)
+        op.inflag_p = indofP1(self.tmesh, threshold=self.is_pressure_boundary)
+        op.set_up()
+        Ax = op.Ax
+        Mx = op.Mx
+        Az = op.Az
+        Mz = op.Mz
+        Bx = op.Bx
+        Bz = op.Bz
+        Mx_ = op.Mx_
+        Mz_ = op.Mz_
+
         level = self.level
+        Axi = [None] * level
+        Mxi = [None] * level
+        Bxi = [None] * level
+        Mx_i = [None] * level
+        # bigAi = [None] * level
+        
+        Axi[-1] = Ax
+        Mxi[-1] = Mx
+        Bxi[-1] = Bx
+        Mx_i[-1] = Mx_
+        
+        # bigAi[-1] = sp.bmat([[A, B.T],[B,None]]).tocsr()
+        Nu = bm.zeros((level,), dtype=bm.int32)
+        Np = bm.zeros((level,), dtype=bm.int32)
+        Nu[-1] = op.n_Ax
+        Np[-1] = op.n_Bx
+        
+        # Compute Pro and Res of u and p.
+        Pro_p = transferP1red(self.mesh0, self.level, self.is_pressure_boundary)
+        Pro_u = transferP2red(self.mesh1, self.level, self.is_velocity_boundary)
+        
+        Res_u = [None] * level
+        Res_p = [None] * level
+        
+        for i in range(self.level - 1):
+            Res_u[i] = Pro_u[i].T
+            Res_p[i] = Pro_p[i].T
+
+        for j in range(level - 1, 0, -1):
+            Axi[j-1] = Res_u[j-1] @ Axi[j] @ Pro_u[j-1]
+            Mxi[j-1] = Res_u[j-1] @ Mxi[j] @ Pro_u[j-1]
+            Bxi[j-1] = Res_p[j-1] @ Bxi[j] @ sp.block_diag([Pro_u[j-1],Pro_u[j-1]])
+            Mx_i[j-1] = Res_p[j-1] @ Mx_i[j] @ Pro_u[j-1]
+            Nu[j-1] = Axi[j-1].shape[0]
+            Np[j-1] = Bxi[j-1].shape[0]
+
+        P_u = [None] * (level-1)
+        P_p = [None] * (level-1)
+        R_u = [None] * (level-1)
+        R_p = [None] * (level-1)
+
+        auxMat = [None] * level
         Ai = [None] * level
         Bi = [None] * level
         bigAi = [None] * level
+
+        Iz2 = spdiags(bm.ones((op.n_Mz,)), 0, op.n_Mz, op.n_Mz)
+        Iz1 = spdiags(bm.ones((op.n_Mz_,)), 0, op.n_Mz_, op.n_Mz_)
+        for j in range(self.level):
+            A0 = sp.kron(Axi[j], Mz) + sp.kron(Mxi[j], Az)
+            Ai[j] = sp.block_diag([A0, A0, A0])
+            Bi[j] = sp.bmat([[sp.kron(Bxi[j], Mz_), sp.kron(Mx_i[j], Bz)]])
+            bigAi[j] = (sp.bmat([[Ai[j], Bi[j].T],[Bi[j], None]]).tocsr())
+            if j < self.level - 1:
+                P_u[j] = sp.kron(Pro_u[j], Iz2.to_scipy())
+                R_u[j] = sp.kron(Res_u[j], Iz2.to_scipy())
+                P_p[j] = sp.kron(Pro_p[j], Iz1.to_scipy())
+                R_p[j] = sp.kron(Res_p[j], Iz1.to_scipy())
+
+        self.P_u = P_u
+        self.P_p = P_p
+        self.R_u = R_u
+        self.R_p = R_p
+        self.bigAi = bigAi
         
-        Ai[-1] = A
-        Bi[-1] = B
-        
-        bigAi[-1] = sp.bmat([[A, B.T],[B,None]]).tocsr()
-
-        Nu = bm.zeros((level,), dtype=bm.int32)
-        Np = bm.zeros((level,), dtype=bm.int32)
-        Nu[-1] = Ai[-1].shape[0] // 2
-        Np[-1] = Bi[-1].shape[0]
-
-        # Compute Pro and Res of u and p.
-        Pro_p = transferP1red(self.mesh0, self.level, self.pressure_dirichlet)
-        Pro_u = transferP2red(self.mesh1, self.level, self.pressure_dirichlet)
-
-        Res_u = [None] * level
-        Res_p = [None] * level
-
-        for i in range(self.level - 1):
-            Pro_u[i] = sp.block_diag([Pro_u[i].to_scipy(),Pro_u[i].to_scipy()])
-            Pro_p[i] = Pro_p[i].to_scipy()
-            Res_u[i] = Pro_u[i].T
-            Res_p[i] = Pro_p[i].T
-        
-        for j in range(level - 1, 0, -1):
-            # Ac = Res*Af*Pro
-            Ai[j-1] = Res_u[j-1] @ Ai[j] @ Pro_u[j-1]
-            Bi[j-1] = Res_p[j-1] @ Bi[j] @ Pro_u[j-1]
-            Nu[j-1] = Ai[j-1].shape[0] // 2
-            Np[j-1] = Bi[j-1].shape[0]
-            bigAi[j-1] = (sp.bmat([[Ai[j-1], Bi[j-1].T],[Bi[j-1], None]]).tocsr())
-
-        Ndof = 2 * Nu + Np
-        auxMat = [None] * level
-        
-        self.Pro_u = Pro_u
-        self.Pro_p = Pro_p
-        self.Res_u = Res_u
-        self.Res_p = Res_p
-
         for k in range(1, level): 
             Bt = Bi[k].T
             BBt = Bi[k] @ Bt
@@ -558,7 +595,6 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         self.Bi = Bi
         self.Nu = Nu
         self.Np = Np
-        self.Ndof = Ndof
         self.bigAi = bigAi
         self.auxMat = auxMat
 
@@ -692,12 +728,12 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         return x
 
     @solve.register('mg')
-    def solve(self, A, B, f, g, u, p):
+    def solve(self, stokes_operator: StokesOperator, F):
         # initial set up
-        self.setup(A, B)
+        self.setup(stokes_operator)
 
-        bigF = bm.concat([f,g-bm.mean(g)], axis=0)
-        bigu = bm.concat([u, p], axis=0)
+        bigF = F
+        bigu = bm.zeros_like(F)
         bigr = bigF - self.bigAi[-1] @ bigu
 
         k = 0
@@ -746,7 +782,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         stokes_operator, A, F = self.linear_system()
         tmr.send(f'初步组装线性系统时间')
         BdDof, F1 = self.apply_bc(stokes_operator, bm.copy(F))
-        stokes_operator.BdDof = BdDof
+
         # BC = DirichletBC(
         #     (self.uspace, self.pspace),
         #     gd=(self.velocity_dirichlet, self.pressure_dirichlet),
@@ -756,10 +792,15 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         # A, F2 = BC.apply(A, F)
         import time
         start = time.time()
+        self.solver = 'mg'
+        
         if self.solver == 'direct':
             x = self.solve['direct'](stokes_operator, F1)
             
         elif self.solver == 'mg':
+            bd_flag = bm.zeros((len(F),), dtype=bm.bool)
+            bm.set_at(bd_flag, BdDof, True)
+            F1 = F1[~bd_flag]
             x = self.solve['mg'](stokes_operator, F1)
         tmr.send(f'求解器时间')
         next(tmr)

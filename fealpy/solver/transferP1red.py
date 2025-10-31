@@ -2,12 +2,33 @@ from ..backend import bm
 from ..mesh import TriangleMesh
 
 
-def transferP1red(mesh: TriangleMesh, level:int, threshold:None):
-        Pro_p = [None]*(level-1)
-        for i in range(level-1):
-            idof0 = threshold(mesh.entity('node'))
-            P = mesh.uniform_refine(n=1, returnim=True)
-            idof1 = threshold(mesh.entity('node'))
-            Pro_p[i] = P[idof0, idof1]
+def indofP1(mesh: TriangleMesh, threshold=None):
+    isDDof = mesh.boundary_node_flag()
+    tnode = mesh.entity('node')
+    points = bm.concat([tnode,bm.zeros((len(tnode),1), dtype=bm.float64)], axis=1)
+    
+    index_dof = bm.arange(len(points))[isDDof]
+    bd_point = points[isDDof] 
+    flag = threshold(bd_point)
+    index_dof = index_dof[flag]
 
-        return Pro_p
+    bd_flag = bm.zeros((len(points),), dtype=bm.bool)
+    bm.set_at(bd_flag, index_dof, True)
+
+    return ~bd_flag
+
+
+def transferP1red(mesh: TriangleMesh, level:int, threshold=None):
+    Pro_p = [None]*(level-1)
+    
+    if threshold == None:
+            return mesh.uniform_refine(n=level-1, returnim=True)[::-1]
+
+    for i in range(level-1):
+        flag0 = indofP1(mesh, threshold)
+        P = mesh.uniform_refine(n=1, returnim=True)[0]
+        flag1 = indofP1(mesh, threshold)
+
+        Pro_p[i] = P.to_scipy()[flag1][:,flag0]
+
+    return Pro_p

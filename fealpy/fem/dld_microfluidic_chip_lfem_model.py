@@ -13,7 +13,7 @@ from fealpy.fem import LinearForm, BilinearForm, BlockForm, LinearBlockForm
 from fealpy.fem import ScalarDiffusionIntegrator as DiffusionIntegrator
 from fealpy.fem import DirichletBC, StokesDirichletBC
 from fealpy.fem import PressWorkIntegrator, SourceIntegrator
-from fealpy.solver import StokesLSCDGS, cg, spsolve, transferP2red
+from fealpy.solver import StokesLSCDGS, cg, spsolve, transferP1red, transferP2red
 from fealpy.sparse import spdiags, coo_matrix, csr_matrix
 
 import scipy.sparse as sp
@@ -312,9 +312,8 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         Np[-1] = Bi[-1].shape[0]
 
         # Compute Pro and Res of u and p.
-        Pro_p = self.mesh0.uniform_refine(n=self.level-1, returnim=True)[::-1]
-        Pro_u = transfer(self.mesh1, self.level)
-
+        Pro_p = transferP1red(self.mesh0, self.level)
+        Pro_u = transferP2red(self.mesh1, self.level)
         Res_u = [None] * level
         Res_p = [None] * level
 

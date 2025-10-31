@@ -83,9 +83,9 @@ class StokesLSCDGS():
             elif self.smoothingbarSp == 'GS':
                 # dp = self.Spt / dq
                 start = time.time()
-                dp = spsolve_triangular(self.Spt, dq, lower=False)
+                # dp = spsolve_triangular(self.Spt, dq, lower=False)
                 # dp = pyamg.ruge_stuben_solver(self.Spt).solve(dq, maxiter=1)
-                # dp = tfqmr(self.Spt, dq, maxiter=3)[0]
+                dp = tfqmr(self.Spt, dq, maxiter=3)[0]
                 mul_time += time.time() - start
             elif self.smoothingbarSp == 'VCYCLE':
                 pass

@@ -15,5 +15,5 @@ from .bicg import bicg
 from .mg import mg
 from .stokes_lscdgs import StokesLSCDGS
 
-from .transferP1red import transferP1red
-from .transferP2red import transferP2red
+from .transferP1red import transferP1red, indofP1
+from .transferP2red import transferP2red, indofP2
