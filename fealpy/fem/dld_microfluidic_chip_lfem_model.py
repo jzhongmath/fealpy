@@ -13,7 +13,7 @@ from fealpy.fem import LinearForm, BilinearForm, BlockForm, LinearBlockForm
 from fealpy.fem import ScalarDiffusionIntegrator as DiffusionIntegrator
 from fealpy.fem import DirichletBC, StokesDirichletBC
 from fealpy.fem import PressWorkIntegrator, SourceIntegrator
-from fealpy.solver import StokesLSCDGS, cg, spsolve, transfer
+from fealpy.solver import StokesLSCDGS, cg, spsolve, transferP2red
 from fealpy.sparse import spdiags, coo_matrix, csr_matrix
 
 import scipy.sparse as sp

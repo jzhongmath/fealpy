@@ -3,7 +3,7 @@ from ..backend import bm
 from ..mesh import TriangleMesh
 from ..sparse import csr_matrix
 
-def transfer(mesh: TriangleMesh, level:int):
+def transferP2red(mesh: TriangleMesh, level:int, threshold:None):
     # input: the coaresest grid
     def P2red(NTc, c2i0, c2i1, Ndofc, Ndoff):
         # we just consider the middle points in fine edges. 
