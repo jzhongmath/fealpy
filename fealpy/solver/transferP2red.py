@@ -9,20 +9,20 @@ from ..sparse import csr_matrix
 CoefLike = Union[float, int, TensorLike, Callable[..., TensorLike]]
 
 def indofP2(mesh: TriangleMesh, threshold=None):
-        space = LagrangeFESpace(mesh, p=2)
-        isDDof = space.is_boundary_dof()
-        tip = mesh.interpolation_points(p=2)
-        points = bm.concat([tip,bm.zeros((len(tip),1), dtype=bm.float64)], axis=1)
-        
-        index_dof = bm.arange(len(points))[isDDof]
-        bd_point = points[isDDof] 
-        flag = threshold(bd_point)
-        index_dof = index_dof[flag]
+    space = LagrangeFESpace(mesh, p=2)
+    isDDof = space.is_boundary_dof()
+    tip = mesh.interpolation_points(p=2)
+    points = bm.concat([tip,bm.zeros((len(tip),1), dtype=bm.float64)], axis=1)
+    
+    index_dof = bm.arange(len(points))[isDDof]
+    bd_point = points[isDDof] 
+    flag = threshold(bd_point)
+    index_dof = index_dof[flag]
 
-        bd_flag = bm.zeros((len(points),), dtype=bm.bool)
-        bm.set_at(bd_flag, index_dof, True)
+    bd_flag = bm.zeros((len(points),), dtype=bm.bool)
+    bm.set_at(bd_flag, index_dof, True)
 
-        return ~bd_flag
+    return ~bd_flag
 
 def transferP2red(mesh: TriangleMesh, level:int, threshold:Optional[Tuple[CoefLike,...]]=None):
     # input: the coaresest grid

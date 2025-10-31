@@ -76,6 +76,8 @@ class StokesOperator(LinearOperator):
         self.Bz = Bz.assembly().to_scipy().T
         self.Mx_ = Mx_.assembly().to_scipy().T
         self.Mz_ = Mz_.assembly().to_scipy().T
+        self.inflag_uz = None
+        self.inflag_pz = None
         self.inflag_u = None
         self.inflag_p = None
         self.BdDof = None
@@ -86,14 +88,25 @@ class StokesOperator(LinearOperator):
     def set_up(self):
         inflag_u = self.inflag_u
         inflag_p = self.inflag_p
+        inflag_uz = self.inflag_uz
+        inflag_pz = self.inflag_pz
         if inflag_u is not None:
             self.fix = False
             self.res_mat = True
             self.Ax = self.Ax[inflag_u][:,inflag_u]
             self.Mx = self.Mx[inflag_u][:,inflag_u]
-            if inflag_u is not None:
+            self.Az = self.Az[inflag_uz][:,inflag_uz]
+            self.Mz = self.Mz[inflag_uz][:,inflag_uz]
+            if inflag_p is not None:
                 self.Bx = self.Bx[inflag_p][:,bm.concat([inflag_u,inflag_u], axis=0)]
                 self.Mx_ = self.Mx_[inflag_p][:,inflag_u]
+                self.Mz_ = self.Mz_[inflag_pz][:,inflag_uz]
+                self.Bz = self.Bz[inflag_pz][:,inflag_uz]
+            else:
+                self.Bx = self.Bx[:,bm.concat([inflag_u,inflag_u], axis=0)]
+                self.Mx_ = self.Mx_[:,inflag_u]
+                self.Mz_ = self.Mz_[:,inflag_uz]
+                self.Bz = self.Bz[:,inflag_uz]
 
         self.n_Ax = self.Ax.shape[0]
         self.n_Mz = self.Mz.shape[0]
@@ -362,17 +375,17 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         """
         Assemble the linear system for the Stokes equations.
         """
-        # from fealpy.mesh import TensorPrismMesh
-        # self.mesh = TensorPrismMesh(self.tmesh, self.imesh)
+        from fealpy.mesh import TensorPrismMesh
+        self.mesh = TensorPrismMesh(self.tmesh, self.imesh)
 
-        # self.uspace = functionspace(self.mesh, ('Lagrange', 2), shape=(3, -1))
-        # self.pspace = functionspace(self.mesh, ('Lagrange', 1))
+        self.uspace = functionspace(self.mesh, ('Lagrange', 2), shape=(3, -1))
+        self.pspace = functionspace(self.mesh, ('Lagrange', 1))
 
         self.int_space0 = LagrangeFESpace(self.imesh, p=1)
         self.int_space1 = LagrangeFESpace(self.imesh, p=2)
         self.tri_space0 = LagrangeFESpace(self.tmesh, p=1)
         self.tri_space1 = LagrangeFESpace(self.tmesh, p=2)
-
+        self.int_space1.is_boundary_dof()
         Ax = BilinearForm(self.tri_space1)
         Ax.add_integrator(ScalarDiffusionIntegrator())
 
@@ -438,7 +451,10 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         isDDof0 = self.tmesh.boundary_node_flag()
         isDDof1 = self.tri_space1.is_boundary_dof()
         isDDof2 = self.imesh.boundary_face_flag()
-        isDDof3 = self.int_space1.is_boundary_dof()
+        igdof = self.int_space1.number_of_global_dofs()
+        isDDof3 = bm.zeros((igdof, ), dtype=bm.bool)
+        bm.set_at(isDDof3, bm.arange(len(isDDof2)), isDDof2)
+        # isDDof3 = self.int_space1.is_boundary_dof()
 
         bd_dof0 = ~((~isDDof1[:, None]) * (~isDDof3[None, :])).ravel()
         bd_dof1 = ~((~isDDof0[:, None]) * (~isDDof2[None, :])).ravel()
@@ -478,6 +494,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             val = gd[1-i](bd_point[flag])
             
             if i == 1:
+                print(index_dof.shape)
                 index_dof = bm.concat([index_dof, index_dof + len(points[1]), 
                                     index_dof + 2*len(points[1])], axis=0)
                 val = val.reshape(-1, order='F')
@@ -486,7 +503,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             isBdDof = bm.zeros(self.n_A, dtype=bm.bool)
             isBdDof = bm.set_at(isBdDof, index_dof, True)
             uh = bm.set_at(uh, (..., isBdDof), val)
-            
+        print(BdDof[1].shape)
         BdDof = bm.concat([BdDof[1], BdDof[0]], axis=0)
         F = F - stokes_operator @ uh
         F = bm.set_at(F, BdDof, uh[BdDof])
@@ -496,7 +513,15 @@ class MGTensorStokesLFEMModel(ComputationalModel):
     def setup(self, op: StokesOperator):
         """Compute restriction and interpolation operators.
         """
+        flag = self.imesh.boundary_face_flag()
+        igdof = self.int_space1.number_of_global_dofs()
+        isDDof = bm.zeros((igdof, ), dtype=bm.bool)
+        bm.set_at(isDDof, bm.arange(len(flag)), flag)
+        op.inflag_pz = ~flag
+        op.inflag_uz = ~isDDof
+        import ipdb;ipdb.set_trace()
         op.inflag_u = indofP2(self.tmesh, threshold=self.is_velocity_boundary)
+        print(op.inflag_u.sum())
         op.inflag_p = indofP1(self.tmesh, threshold=self.is_pressure_boundary)
         op.set_up()
         Ax = op.Ax
@@ -567,7 +592,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
                 R_u[j] = sp.kron(Res_u[j], Iz2.to_scipy())
                 P_p[j] = sp.kron(Pro_p[j], Iz1.to_scipy())
                 R_p[j] = sp.kron(Res_p[j], Iz1.to_scipy())
-
+        
         self.P_u = P_u
         self.P_p = P_p
         self.R_u = R_u
@@ -730,8 +755,9 @@ class MGTensorStokesLFEMModel(ComputationalModel):
     @solve.register('mg')
     def solve(self, stokes_operator: StokesOperator, F):
         # initial set up
+        
         self.setup(stokes_operator)
-
+        
         bigF = F
         bigu = bm.zeros_like(F)
         bigr = bigF - self.bigAi[-1] @ bigu
@@ -782,7 +808,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         stokes_operator, A, F = self.linear_system()
         tmr.send(f'初步组装线性系统时间')
         BdDof, F1 = self.apply_bc(stokes_operator, bm.copy(F))
-
+        
         # BC = DirichletBC(
         #     (self.uspace, self.pspace),
         #     gd=(self.velocity_dirichlet, self.pressure_dirichlet),
@@ -795,6 +821,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         self.solver = 'mg'
         
         if self.solver == 'direct':
+            # x = spsolve(A.to_scipy(), F2)
             x = self.solve['direct'](stokes_operator, F1)
             
         elif self.solver == 'mg':
@@ -809,7 +836,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         uh = x[:ugdof]
         ph = x[ugdof:]
         print(ph.max(),uh.max())
-        # self.post_process(uh ,ph)
+        self.post_process(uh ,ph)
         return uh, ph
     
     def error(self):

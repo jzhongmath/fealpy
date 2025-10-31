@@ -55,7 +55,7 @@ parser.add_argument('--stage_length',
     help = "Number of stages (or periods) in the chip.")
 
 parser.add_argument('--lc',
-    default = 0.3, type = float,
+    default = 1, type = float,
     help = "Grid size for meshing.")
 
 parser.add_argument('--show_figure',
@@ -108,7 +108,7 @@ gmsh.finalize()
 n = options['n']
 level = options['level']
 # imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=2*(level - 1)*n)
-imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=3)
+imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=4)
 
 
 model = MGTensorStokesLFEMModel(options=options)
