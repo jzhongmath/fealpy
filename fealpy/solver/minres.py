@@ -202,17 +202,17 @@ def minres(
         stop_res = res / (Anorm * xnorm)
 
         # Convergence checks
-        if res < atol:
+        if (res < atol) and (stop_res < rtol) :
             logger.info(
                 f"minres: converged in {niter} iterations, (absolute tolerance: {atol:.1e})"
                 )
             break
 
-        if stop_res < rtol:
-            logger.info(
-                f"minres: converged in {niter} iterations, (relative tolerance: {rtol:.1e})"
-            )
-            break
+        # if stop_res < rtol:
+        #     logger.info(
+        #         f"minres: converged in {niter} iterations, (relative tolerance: {rtol:.1e})"
+        #     )
+        #     break
         
         if (maxit is not None) and (niter >= maxit):
             logger.info(f"minres: failed, stopped by maxiter ({maxit}).")

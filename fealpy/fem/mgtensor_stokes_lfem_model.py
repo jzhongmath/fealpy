@@ -15,21 +15,10 @@ from fealpy.model.mgtensor_possion import MGTensorPossionPDEDataT
 from fealpy.mesher import DLDMicrofluidicChipMesher
 
 from fealpy.sparse import spdiags, coo_matrix, csr_matrix
-from fealpy.solver import cg, spsolve, StokesLSCDGS, transferP2red
+from fealpy.solver import cg, spsolve
 from fealpy.utils import timer
 
 import scipy.sparse as sp
-import scipy.sparse.linalg as lg
-import time
-
-
-"""
-1. 减小矩阵规模来作用内部自由度
-2. 相应的减少插值、限制矩阵规模
-3. 改为GPU
-
-"""
-
 
 class SumOperator:
     def __init__(self, *ops):
@@ -68,7 +57,6 @@ class KronOperator(LinearOperator):
         Y = Y.ravel()
         return Y
 
-
 class StokesOperator(LinearOperator):
     def __init__(self, Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_):
         self.Ax = Ax.assembly().to_scipy()
@@ -101,23 +89,24 @@ class StokesOperator(LinearOperator):
         self.n_A = 3 * self.n_u0 + self.n_p
         self.shape = self.n_A, self.n_A
 
-        self.is_boundary_dof = None
+        self.BdDof = None
         self.fix = False
 
     def __matmul__(self, x):
+        v = bm.copy(x)
         if self.fix:
-            val = x[self.is_boundary_dof]
-            bm.set_at(x, self.is_boundary_dof, 0.0)
+            val = v[self.BdDof]
+            v = bm.set_at(v, self.BdDof, 0.0)
 
-        U1 = bm.reshape(x[:self.n_u0], (self.n_Ax, self.n_Mz))
-        U2 = bm.reshape(x[self.n_u0:2*self.n_u0], (self.n_Ax, self.n_Mz))
-        U3 = bm.reshape(x[2*self.n_u0:3*self.n_u0], (self.n_Ax, self.n_Mz))
+        U1 = bm.reshape(v[:self.n_u0], (self.n_Ax, self.n_Mz)).copy()
+        U2 = bm.reshape(v[self.n_u0:2*self.n_u0], (self.n_Ax, self.n_Mz)).copy()
+        U3 = bm.reshape(v[2*self.n_u0:3*self.n_u0], (self.n_Ax, self.n_Mz)).copy()
 
-        U4 = bm.reshape(x[:2*self.n_u0], (self.m_Bx, self.m_Mz_))
-        U5 = bm.reshape(x[2*self.n_u0:3*self.n_u0], (self.m_Mx_, self.m_Bz))
+        U4 = bm.reshape(v[:2*self.n_u0], (self.m_Bx, self.m_Mz_)).copy()
+        U5 = bm.reshape(v[2*self.n_u0:3*self.n_u0], (self.m_Mx_, self.m_Bz)).copy()
 
-        P = bm.reshape(x[-self.n_p:], (self.n_Bx, self.n_Mz_))
-
+        P = bm.reshape(v[-self.n_p:], (self.n_Bx, self.n_Mz_)).copy()
+        
         AU1 = self.Ax @ U1 @ self.Mz + self.Mx @ U1 @ self.Az
         AU2 = self.Ax @ U2 @ self.Mz + self.Mx @ U2 @ self.Az
         AU3 = self.Ax @ U3 @ self.Mz + self.Mx @ U3 @ self.Az
@@ -134,7 +123,7 @@ class StokesOperator(LinearOperator):
 
         y = bm.concat([l1, l2, l3], axis=0)
         if self.fix:
-            bm.set_at(y, self.is_boundary_dof, val)
+            bm.set_at(y, self.BdDof, val) 
         else:
             self.fix = True
         return y
@@ -162,13 +151,11 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         self.maxIt = options.get('solvermaxit', 200)  
         self.N0 = options.get('N0', 500)
         self.mu = options.get('smoothingstep', 1)
-        self.solver = options.get('solver', 'direct')
+        self.solver = options.get('solver', 'VCYCLE')
 
-        self.cycle_type = options.get('cycle_type', 'VCYCLE')
-        self.smoothing_times = options.get('smoothing_times', 1)
         self.preconditioner = options.get('preconditioner', 'none')
         self.coarsegridsolver = options.get('coarsegridsolver', 'direct')
-        self.solver = options.get('solver', 'mg')
+        self.smoother = options.get('smoother', 'LINE')
         
         self.thickness = options.get('thickness', 0.1)
 
@@ -341,6 +328,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         """
         from fealpy.mesh import TensorPrismMesh
         self.mesh = TensorPrismMesh(self.tmesh, self.imesh)
+
         self.uspace = functionspace(self.mesh, ('Lagrange', 2), shape=(3, -1))
         self.pspace = functionspace(self.mesh, ('Lagrange', 1))
 
@@ -402,8 +390,10 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             values=A.data,
             spshape=A.shape
         )
+        # A = None
         self.n_A = stokes_operator.n_A
         self.n_u0 = stokes_operator.n_u0
+        self.n_p = stokes_operator.n_p
         self.x0 = bm.zeros((self.n_A,), dtype=bm.float64)
         F = bm.zeros((self.n_A,), dtype=bm.float64)
         # print(self.n_A)
@@ -411,7 +401,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         return stokes_operator, A, F
     
     def boundary_dof_index(self):
-        isDDof0 = self.tri_space0.is_boundary_dof()
+        isDDof0 = self.tmesh.boundary_node_flag()
         isDDof1 = self.tri_space1.is_boundary_dof()
         isDDof2 = self.imesh.boundary_face_flag()
         isDDof3 = self.int_space1.is_boundary_dof()
@@ -441,7 +431,6 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         
         dofs = self.boundary_dof_index()
         points = self.interpolation_points()
-        bd_dof = bm.concat([dofs[1], dofs[1], dofs[1], dofs[0]], axis=0)
         basic = [3*len(points[1]), 0]
         BdDof = []
 
@@ -454,6 +443,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             # import ipdb;ipdb.set_trace()
             index_dof = index_dof[flag]
             val = gd[1-i](bd_point[flag])
+
             if i == 1:
                 index_dof = bm.concat([index_dof, index_dof + len(points[1]), 
                                     index_dof + 2*len(points[1])], axis=0)
@@ -463,7 +453,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             isBdDof = bm.set_at(isBdDof, index_dof, True)
             uh = bm.set_at(uh, (..., isBdDof), val)
             
-        BdDof = bm.concat(BdDof)
+        BdDof = bm.concat([BdDof[1], BdDof[0]], axis=0)
         F = F - stokes_operator @ uh
         F = bm.set_at(F, BdDof, uh[BdDof])
 
@@ -471,12 +461,12 @@ class MGTensorStokesLFEMModel(ComputationalModel):
 
     def set_mesh(self, tmesh: TriangleMesh, imesh: IntervalMesh):
         self.tmesh = tmesh
-        self.IMP = tmesh.uniform_refine(n=self.level-1, returnim=True)
-        self.IMU = self.transferP2red(tmesh)
+        self.IM = tmesh.uniform_refine(n=self.level-1, returnim=True)
         self.imesh = imesh
         self.Ny = self.imesh.number_of_nodes()
         self.Nx = self.tmesh.number_of_nodes()
         self.NxNy = self.Nx * self.Ny
+        
         
         tnode = tmesh.entity('node')
         inode = imesh.entity('node')
@@ -487,315 +477,208 @@ class MGTensorStokesLFEMModel(ComputationalModel):
     def set_space_degree(self, p: int = 1) -> None:
         self.p = p
 
-    def transferP1red(self, mesh: TriangleMesh, level:int, threshold:None):
-        Pro_p = [None]*(level-1)
-        for i in range(level-1):
-            idof0 = threshold(mesh.entity('node'))
-            P = mesh.uniform_refine(n=1, returnim=True)
-            idof1 = threshold(mesh.entity('node'))
-            Pro_p[i] = P[idof0, idof1]
-
-        return Pro_p
-    
-    def setup(self, Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_):
+    def setup(self, A):
         """Compute restriction and interpolation operators.
         """
-        A = A.to_scipy()
-        B = B.to_scipy()
-        level = self.level
-        Ai = [None] * level
-        Bi = [None] * level
-        bigAi = [None] * level
-        
-        Ai[-1] = A
-        Bi[-1] = B
-        
-        bigAi[-1] = sp.bmat([[A, B.T],[B,None]]).tocsr()
+        self.A = [A]
+        self.B = [ ] 
+        self.P = [ ] 
+        self.R = [ ] 
+        self.L = [ ] 
+        self.U = [ ] 
+        self.ab = []
 
-        Nu = bm.zeros((level,), dtype=bm.int32)
-        Np = bm.zeros((level,), dtype=bm.int32)
-        Nu[-1] = Ai[-1].shape[0] // 2
-        Np[-1] = Bi[-1].shape[0]
-
-        # Compute Pro and Res of u and p.
-        Pro_p = self.transferP1red(self.mesh0, self.level, self.pressure_dirichlet)
-        Pro_u = transferP2red(self.mesh1, self.level, self.pressure_dirichlet)
-
-        Res_u = [None] * level
-        Res_p = [None] * level
+        # Compute P and R.
+        IM = self.IM
+        nshape = IM[0].shape[0]
+        op = spdiags(bm.ones((nshape,)), 0, nshape, nshape)
+        Iz = spdiags(bm.ones((self.Ny,)), 0, self.Ny, self.Ny)
 
         for i in range(self.level - 1):
-            Pro_u[i] = sp.block_diag([Pro_u[i].to_scipy(),Pro_u[i].to_scipy()])
-            Pro_p[i] = Pro_p[i].to_scipy()
-            Res_u[i] = Pro_u[i].T
-            Res_p[i] = Pro_p[i].T
-        
-        for j in range(level - 1, 0, -1):
-            # Ac = Res*Af*Pro
-            Ai[j-1] = Res_u[j-1] @ Ai[j] @ Pro_u[j-1]
-            Bi[j-1] = Res_p[j-1] @ Bi[j] @ Pro_u[j-1]
-            Nu[j-1] = Ai[j-1].shape[0] // 2
-            Np[j-1] = Bi[j-1].shape[0]
-            bigAi[j-1] = (sp.bmat([[Ai[j-1], Bi[j-1].T],[Bi[j-1], None]]).tocsr())
+            p = KronOperator(IM[i], Iz)
+            r = KronOperator(IM[i].T, Iz)
 
-        Ndof = 2 * Nu + Np
-        auxMat = [None] * level
-        
-        self.Pro_u = Pro_u
-        self.Pro_p = Pro_p
-        self.Res_u = Res_u
-        self.Res_p = Res_p
+            self.P.append(p)
+            self.R.append(r)
 
-        for k in range(1, level): 
-            Bt = Bi[k].T
-            BBt = Bi[k] @ Bt
-            BABt = Bi[k] @ Ai[k] @ Bt
-            Su = sp.tril(Ai[k]).tocsr()
-            Sp = sp.tril(BBt).tocsr()
-            Spt = sp.triu(BBt).tocsr()
-            DSp = BBt.diagonal()
-            auxMat[k] = {
-                'Bt': Bt,
-                'BBt': BBt,
-                'BABt': BABt,
-                'Su': Su,
-                'Spt': Spt,
-                'Sp': Sp,
-                'DSp': DSp
-            }
-        self.Ai = Ai
-        self.Bi = Bi
-        self.Nu = Nu
-        self.Np = Np
-        self.Ndof = Ndof
-        self.bigAi = bigAi
-        self.auxMat = auxMat
+            k1 = op.T @ self.A00 @ op
+            k2 = op.T @ self.A01 @ op
+            k3 = op.T @ op
+            k4 = op.T @ self.D0x @ op
 
+            B = (
+                KronOperator(k1.diags(), self.A11) +
+                KronOperator(k2.diags(), self.A10) +
+                KronOperator(k3.diags(), Iz) +
+                KronOperator(k4.diags(), -self.D0z)
+            )
+
+            if i < (self.level - 1):
+                op = op @ IM[i]
+            
+            k1 = op.T @ self.A00 @ op
+            k2 = op.T @ self.A01 @ op
+            k3 = op.T @ op
+            k4 = op.T @ self.D0x @ op
+
+            self.A.append(
+                KronOperator(k1, self.A11) +
+                KronOperator(k2, self.A10) +
+                KronOperator(k3, Iz) +
+                KronOperator(k4, -self.D0z)
+            )
+
+            self.B.append(B)
+            
     def vcycle(self, r, J=None):
+        """solve equations Ae = r in each level  
+        """ 
+          
         if J is None:
-            J = self.level - 1
-        if J == 0:
-            import pyamg
-            start = time.time()
-            # mg = pyamg.ruge_stuben_solver(self.bigAi[J])
-            # e = mg.solve(r)
-            e = spsolve(self.bigAi[J], r)
-            self.coarse_count += 1
-            self.coarse_time += time.time() - start
-            return e
+            J = self.level
         
-        Pro_u = self.Pro_u[J-1]
-        Pro_p = self.Pro_p[J-1]
-        Res_u = self.Res_u[J-1]
-        Res_p = self.Res_p[J-1]
+        ri = [None] * J
+        ei = [None] * J
+        ri[0] = r
+
+        # 粗化
+        for i in range(J-1):
+            ei[i] = self.linesmoother(ri[i], i)
+
+            for _ in range(self.mu):
+                ei[i] += self.linesmoother(ri[i] - self.A[i] @ ei[i], i)
+
+            ri[i+1] = self.R[i] @ (ri[i] - self.A[i] @ ei[i])
+
+        # 粗网格求解
+        if self.coarsegridsolver == 'direct':
+            ei[-1] = cg(self.A[-1], ri[-1], maxit=1000, atol=1e-9, rtol=1e-9)
+            
+        else:
+            pass
         
-        ru = r[:2*self.Nu[J]]
-        rp = r[2*self.Nu[J]:]
-        
-        # pre-smoothing
-        eu, ep = self.smoothing(bm.zeros((2*self.Nu[J],)),bm.zeros((self.Np[J],)),ru,rp,J)
-        if self.smoothing_times == 2:
-            eu, ep = self.smoothing(eu,ep,ru,rp,J)
+        # 插值
+        for i in range(J-2, -1, -1):
+            ei[i] += self.P[i] @ ei[i+1]
+            ei[i] += self.linesmoother(ri[i] - self.A[i] @ ei[i], i)
 
-        # form residual and restrict onto coarse grid
-        rru = ru - self.Ai[J] @ eu - self.Bi[J].T @ ep
-        rrp = rp - self.Bi[J] @ eu
-
-        ruc = Res_u @ rru
-        rpc = Res_p @ rrp
-        
-        # coarse grid correction
-        rc = bm.concat([ruc, rpc], axis=0)
-        ec = self.vcycle(rc, J-1)
-
-        # correction on the fine grid
-        tempeu = Pro_u @ ec[:2*self.Nu[J-1]]
-        tempep = Pro_p @ ec[2*self.Nu[J-1]:]
-        eu = tempeu + eu
-        ep = tempep + ep
-
-        # post-smoothing
-        eu, ep = self.smoothing(eu,ep,ru,rp,J)
-        if self.smoothing_times == 2:
-            eu, ep = self.smoothing(eu,ep,ru,rp,J)
-        e = bm.concat([eu, ep], axis=0)
-        return e       
-
-    def wcycle(self, r, J=None): 
-        if J is None:
-            J = self.level - 1
-        if J == 0:
-            e = bm.zeros_like(r)
-            start = time.time()
-            # e[:-1] = lg.spsolve(self.bigAi[J].tocsr()[:-1, :-1], r[:-1])
-            e = lg.spsolve(self.bigAi[J].tocsr(), r)
-            self.coarse_time += time.time() - start
-            self.coarse_count += 1
-            return e
-        
-        Res_u = self.Pro_u[J-1].T
-        Res_p = self.Pro_p[J-1].T
-        
-        ru = r[:2*self.Nu[J]]
-        rp = r[2*self.Nu[J]:]
-        
-        # pre-smoothing
-        eu, ep = self.smoothing(bm.zeros((2*self.Nu[J],)),bm.zeros((self.Np[J],)),ru,rp,J)
-        if self.smoothing_times == 2:
-            eu, ep = self.smoothing(eu,ep,ru,rp,J)
-
-        # form residual and restrict onto coarse grid
-        rru = ru - self.Ai[J] @ eu - self.Bi[J].T @ ep
-        rrp = rp - self.Bi[J] @ eu
-
-        ruc = (Res_u @ rru.reshape(2, -1).T).reshape(-1, order='F')
-        rpc = Res_p @ rrp
-        
-        # coarse grid correction
-        rc = bm.concat([ruc, rpc], axis=0)
-        ec = self.wcycle(rc, J-1)
-        # once more for w-cycle
-        ec = ec + self.wcycle(rc - self.bigAi[J-1] @ ec,J-1)
-
-        # correction on the fine grid
-        tempeu = (self.Pro_u[J-1] @ (ec[:2*self.Nu[J-1]].reshape(2, -1).T)).reshape(-1, order='F')
-        tempep = self.Pro_p[J-1] @ ec[2*self.Nu[J-1]:]
-        eu = tempeu + eu
-        ep = tempep + ep
-
-        # post-smoothing
-        eu, ep = self.smoothing(eu,ep,ru,rp,J)
-        if self.smoothing_times == 2:
-            eu, ep = self.smoothing(eu,ep,ru,rp,J)
-        e = bm.concat([eu, ep], axis=0)
-        return e       
+            for _ in range(self.mu):
+                ei[i] += self.linesmoother(ri[i] - self.A[i] @ ei[i], i)
+        return ei[0]
     
-    def smoothing(self, u, p, f, g, J):
+    def linesmoother(self, r, J):
         """Solve LUe = r.
         """
-        auxMat = self.auxMat[J]
-        smootherOpt = self.options
-        A = self.Ai[J]
-        B = self.Bi[J]
-        start = time.time()
-        smoother = StokesLSCDGS(auxMat,smootherOpt)
-        u, p, self.mul_time = smoother.run(u,p,f,g,A,B,self.mul_time)
-        t = time.time() - start
-        print(t)
-        self.smoothing_time += t
-        self.smoothing_count += 1
-        return u, p    
+        e = cg(self.B[J], r, maxit=100, atol=1e-6, rtol=1e-6)
+        # e = spsolve(self.B[J], r)
+        e = 0.75 * e
+
+        return e
     
     @variantmethod('direct')
-    def solve(self, A, F, solver='mumps'):
-    # def solve(self, A, F, solver='mumps'):
+    def solve(self, stokes_operator: StokesOperator, F, solver='mumps'):
         """
         Solve the linear system using direct method.
         """
-        self.solve_str = 'direct'
-        # import pyamg
-        # solver = pyamg.ruge_stuben_solver(stokes_operator)
-        # x = solver.solve(F, tol=1e-10)
-        from fealpy.solver import bicgstab, minres, gmres, cg, bicg, lgmres
-        x = spsolve(A, F)
-        # x, info = gmres(stokes_operator, F)
-        # x, info = minres(stokes_operator, F)
+        # from scipy.sparse.linalg import bicgstab, minres, gmres, cg, LinearOperator
+        from fealpy.solver import bicgstab, minres, gmres, cg
+        # linop = LinearOperator(shape=stokes_operator.shape,matvec=stokes_operator)
+        # x, info = bicgstab(stokes_operator, F)
+        x, info = minres(stokes_operator, F, atol=1e-8, rtol=1e-8)
         # x, info = cg(stokes_operator, F, returninfo=True)
-        # x, info = bicg(stokes_operator, F)
-        # x, info = lgmres(stokes_operator, F)
-        print(f'当前使用直接法')
-        return x
-        # return spsolve(A, F, solver = solver)
-
-    @solve.register('operator')
-    def solve(self, stokes_operator: StokesOperator, F):
-        """
-        Solve the linear system using direct method.
-        """
-        self.solve_str = 'direct'
-        from fealpy.solver import bicgstab, minres, gmres, cg, bicg, lgmres
-        x, info = bicgstab(stokes_operator, F)
-        print(stokes_operator, info)
+        print(info)
         return x
 
-    @solve.register('mg')
-    def solve(self, A, B, f, g, u, p):
+    @solve.register('gmg')
+    def solve(self, A, F):
         # initial set up
-        self.setup(A, B)
-
-        bigF = bm.concat([f,g-bm.mean(g)], axis=0)
-        bigu = bm.concat([u, p], axis=0)
-        bigr = bigF - self.bigAi[-1] @ bigu
+        self.setup(A)
 
         k = 0
-        nb = bm.linalg.norm(bigF)
-        err = bm.zeros((self.maxIt, 1), dtype=bm.float64)
-        err[0] = bm.linalg.norm(bigr) / nb
+        x = self.x0
+        r = F - A @ x
+        nb = bm.linalg.norm(F)
+        err = bm.zeros((self.maxIt, 2), dtype=bm.float64)
 
-        while (bm.max(err[k]) > self.tol) & (k <= self.maxIt):
-            k = k + 1
-            if self.solver == 'VCYCLE':
-                bigerru = self.vcycle(bigr)
-            elif self.solver == 'WCYCLE':
-                bigerru = self.wcycle(bigr)
-            bigu = bigu + bigerru
-            bigr = bigr - self.bigAi[-1] @ bigerru
+        if nb > bm.finfo(float).eps:
+            err[0, :] = bm.linalg.norm(r) / nb
+        else:
+            err[0, :] = bm.linalg.norm(r)
 
-            # compute the relative error
-            err[k] = bm.linalg.norm(bigr) / nb
+        if self.solver == 'VCYCLE':
+            print('Multigrid Vcycle Iteration \n')
+            while (bm.max(err[k, :]) > self.tol) & (k <= self.maxIt):
+                k = k + 1
+                Br = self.vcycle(r)
+                x = x + Br
+                r = r - A @ Br
+                err[k, 0] = bm.sqrt(bm.abs(Br.T @ r / (x.T @ F)))
+                err[k, 1] = bm.linalg.norm(r) / nb
 
-            print(
-                f'MG Vcycle iter: {k:2d},   '
-                f'err = {bm.max(err[k, :]):8.4e}'
-            )
-        err = err[:k]
-        itStep = k
-        u = bigu[:3*self.Nu[-1]]
-        p = bigu[3*self.Nu[-1]:]
+                print(
+                    f'MG Vcycle iter: {k:2d},   '
+                    f'err = {bm.max(err[k, :]):8.4e}'
+                )
+            err = err[:k, :]
+            itStep = k
 
+        elif self.solver == 'WCYCLE':
+            pass
+        
         # Output
-        print(f"iter: {itStep:2.0f},  "
+        print(f"dof: {self.NxNy:2.0f},  "
+            f"level: {self.level:2.0f},  "
+            f"smoothing: {self.mu:2.0f},  "
+            f"iter: {itStep:2.0f},  "
             f"err = {max(err[-1]):8.4e},  "
             f"coarse grid: {self.A[-1].shape[0]:2.0f},  ")
 
         if k > self.maxIt:
             print("NOTE: the iterative method does not converge!")
 
-        return u, p
+        return x
 
-    @solve.register('asmg')
+    @solve.register('amg')
     def solve(self, A, F):
         raise NotImplementedError("AMG solver not yet implemented.")
 
     def run(self):
         tmr = timer()
         next(tmr)
-
-        self.solver = 'operator'
-        if self.solver == 'direct':
-            _, A, F = self.linear_system()
-            BC = DirichletBC(
-                (self.uspace, self.pspace),
-                gd=(self.velocity_dirichlet, self.pressure_dirichlet),
-                threshold=(self.is_velocity_boundary, self.is_pressure_boundary),
-                method='interp'
-            )
-            A, F1 = BC.apply(A, F)
-            x = self.solve['direct'](A, F1)
-        elif self.solver == 'operator':
-            stokes_operator, _, F = self.linear_system()
-            BdDof, F0 = self.apply_bc(stokes_operator, F)
-            stokes_operator.is_boundary_dof = BdDof
-            x = self.solve['operator'](stokes_operator, F0)
-        elif self.solver == 'mg':
-            stokes_operator, F = self.linear_system()
-            BdDof, F0 = self.apply_bc(stokes_operator, F)
-            stokes_operator.is_boundary_dof = BdDof
-            x = self.solve['mg'](stokes_operator, F0)
+        stokes_operator, A, F = self.linear_system()
+        # A, F = self.linear_system()
+        tmr.send(f'初步组装线性系统时间')
+        BdDof, F1 = self.apply_bc(stokes_operator, bm.copy(F))
+        stokes_operator.BdDof = BdDof
+        # BC = DirichletBC(
+        #     (self.uspace, self.pspace),
+        #     gd=(self.velocity_dirichlet, self.pressure_dirichlet),
+        #     threshold=(self.is_velocity_boundary, self.is_pressure_boundary),
+        #     method='interp'
+        # )
+        # import ipdb;ipdb.set_trace()
+        # A, F2 = BC.apply(A, F)
+        import time
+        start = time.time()
+        # a = bm.zeros((3*self.n_u0,))
+        # b = bm.zeros((self.n_p))
+        # for _ in range(10):
+        #     test = bm.random.rand(3*self.n_u0)**4
+        #     testp = bm.random.rand(self.n_p)**4
+        #     (stokes_operator@bm.concat([a,bm.random.rand(self.n_p)], axis=0))[-2400:].max()
+            
+        #     bm.linalg.norm(A@bm.concat([a,test], axis=0)-stokes_operator@bm.concat([a,test], axis=0))
+        #     res = bm.linalg.norm(A@bm.concat([test, testp], axis=0)-stokes_operator@bm.concat([test, testp]))
+        #     print(bm.mean(test),res)
+              
+        # x = spsolve(A, F2, 'scipy')
+        x = self.solve(stokes_operator, F1)
         tmr.send(f'求解器时间')
         next(tmr)
-        ugdof = self.n_u0
+        print(time.time() - start)
+        ugdof = self.uspace.number_of_global_dofs()
         uh = x[:ugdof]
+        # import ipdb;ipdb.set_trace()
         ph = x[ugdof:]
         # err = self.postprocess()
         # self.logger.info(f"L2 point Error: {err}.")
@@ -815,11 +698,10 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         # import ipdb;ipdb.set_trace()
         idx = bm.arange(gdof).reshape(tgdof, -1)[:tNN, :iNN].ravel()
 
-        from fealpy.mesh import TensorPrismMesh
-        self.mesh = TensorPrismMesh(self.tmesh, self.imesh)
         self.mesh.nodedata['ph'] = ph
         self.mesh.nodedata['uh'] = uh.reshape(3,-1).T[idx,:]
-        
+        print(ph.max(),uh.max())
         self.mesh.to_vtk('dld_prism_chip.vtu')
+
 
     

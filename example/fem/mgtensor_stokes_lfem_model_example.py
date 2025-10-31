@@ -55,7 +55,7 @@ parser.add_argument('--stage_length',
     help = "Number of stages (or periods) in the chip.")
 
 parser.add_argument('--lc',
-    default = 0.03, type = float,
+    default = 0.02, type = float,
     help = "Grid size for meshing.")
 
 parser.add_argument('--show_figure',
