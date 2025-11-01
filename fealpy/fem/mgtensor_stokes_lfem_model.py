@@ -101,13 +101,17 @@ class StokesOperator(LinearOperator):
             if inflag_p is not None:
                 self.Bx = self.Bx[inflag_p][:,bm.concat([inflag_u,inflag_u], axis=0)]
                 self.Mx_ = self.Mx_[inflag_p][:,inflag_u]
-                self.Mz_ = self.Mz_[inflag_pz][:,inflag_uz]
-                self.Bz = self.Bz[inflag_pz][:,inflag_uz]
+                self.Mz_ = self.Mz_[:,inflag_uz]
+                self.Bz = self.Bz[:,inflag_uz]
+                # self.Mz_ = self.Mz_[inflag_pz][:,inflag_uz]
+                # self.Bz = self.Bz[inflag_pz][:,inflag_uz]
             else:
                 self.Bx = self.Bx[:,bm.concat([inflag_u,inflag_u], axis=0)]
                 self.Mx_ = self.Mx_[:,inflag_u]
                 self.Mz_ = self.Mz_[:,inflag_uz]
                 self.Bz = self.Bz[:,inflag_uz]
+                # self.Mz_ = self.Mz_[:,inflag_uz]
+                # self.Bz = self.Bz[:,inflag_uz]
 
         self.n_Ax = self.Ax.shape[0]
         self.n_Mz = self.Mz.shape[0]
@@ -126,7 +130,6 @@ class StokesOperator(LinearOperator):
 
         self.n_u0 = self.n_Ax * self.n_Mz
         self.n_p = self.n_Bx * self.n_Mz_
-
         self.n_A = 3 * self.n_u0 + self.n_p
         self.shape = self.n_A, self.n_A
 
@@ -219,15 +222,15 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         
         # import matplotlib.pyplot as plt
         # from fealpy.mesh import TensorPrismMesh
-        # mesh = TensorPrismMesh(self.tmesh, imesh)
-        
-        # ipoints = tmesh.interpolation_points(p=2)
+        # # mesh = TensorPrismMesh(self.tmesh, imesh)
+        # mesh = tmesh
+        # ipoints = tmesh.interpolation_points(p=1)
         # fig = plt.figure()
         # axes = fig.add_subplot(111)
         # mesh.add_plot(axes)
         # mesh.find_node(axes, node=ipoints, 
         #             showindex=True, color='r', fontsize='10')
-        # tmesh.find_cell(axes, showindex=True, fontsize='35')
+        # # tmesh.find_cell(axes, showindex=True, fontsize='35')
         # plt.show()
 
         self.radius = mesher.radius
@@ -457,7 +460,6 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         # )
         A = None
         self.n_A = stokes_operator.n_A
-        self.n_u0 = stokes_operator.n_u0
         self.n_p = stokes_operator.n_p
         self.x0 = bm.zeros((self.n_A,), dtype=bm.float64)
         F = bm.zeros((self.n_A,), dtype=bm.float64)
@@ -508,10 +510,10 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             flag = threshold[1-i](bd_point)
             index_dof = index_dof[flag]
             val = gd[1-i](bd_point[flag])
-            
             if i == 1:
                 index_dof = bm.concat([index_dof, index_dof + len(points[1]), 
                                     index_dof + 2*len(points[1])], axis=0)
+                
                 val = val.reshape(-1, order='F')
 
             BdDof.append(index_dof)
@@ -521,7 +523,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
 
         BdDof = bm.concat([BdDof[1], BdDof[0]], axis=0)
         F = F - stokes_operator @ uh
-        F = bm.set_at(F, BdDof, uh[BdDof])
+        # F = bm.set_at(F, BdDof, uh[BdDof])
 
         return BdDof, F
 
@@ -535,7 +537,6 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         op.inflag_pz = ~flag
         op.inflag_uz = ~isDDof
         op.inflag_u = indofP2(self.tmesh, threshold=self.is_velocity_boundary)
-
         op.inflag_p = indofP1(self.tmesh, threshold=self.is_pressure_boundary)
         op.set_up()
         Ax = op.Ax
@@ -581,8 +582,6 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             Mxi[j-1] = Res_u[j-1] @ Mxi[j] @ Pro_u[j-1]
             Bxi[j-1] = Res_p[j-1] @ Bxi[j] @ sp.block_diag([Pro_u[j-1],Pro_u[j-1]])
             Mx_i[j-1] = Res_p[j-1] @ Mx_i[j] @ Pro_u[j-1]
-            Nu[j-1] = Axi[j-1].shape[0]
-            Np[j-1] = Bxi[j-1].shape[0]
 
         P_u = [None] * (level-1)
         P_p = [None] * (level-1)
@@ -600,10 +599,14 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             A0 = sp.kron(Axi[j], Mz) + sp.kron(Mxi[j], Az)
             Ai[j] = sp.block_diag([A0, A0, A0])
             Bi[j] = sp.bmat([[sp.kron(Bxi[j], Mz_), sp.kron(Mx_i[j], Bz)]])
+            Nu[j] = A0.shape[0]
+            Np[j] = Bi[j].shape[0]
             bigAi[j] = (sp.bmat([[Ai[j], Bi[j].T],[Bi[j], None]]).tocsr())
             if j < self.level - 1:
-                P_u[j] = sp.kron(Pro_u[j], Iz2.to_scipy())
-                R_u[j] = sp.kron(Res_u[j], Iz2.to_scipy())
+                P0 = sp.kron(Pro_u[j], Iz2.to_scipy())
+                R0 = sp.kron(Res_u[j], Iz2.to_scipy())
+                P_u[j] = sp.block_diag([P0, P0, P0])
+                R_u[j] = sp.block_diag([R0, R0, R0])
                 P_p[j] = sp.kron(Pro_p[j], Iz1.to_scipy())
                 R_p[j] = sp.kron(Res_p[j], Iz1.to_scipy())
         
@@ -634,7 +637,6 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         self.Bi = Bi
         self.Nu = Nu
         self.Np = Np
-        self.bigAi = bigAi
         self.auxMat = auxMat
 
     def vcycle(self, r, J=None):
@@ -650,16 +652,16 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             self.coarse_time += time.time() - start
             return e
         
-        Pro_u = self.Pro_u[J-1]
-        Pro_p = self.Pro_p[J-1]
-        Res_u = self.Res_u[J-1]
-        Res_p = self.Res_p[J-1]
+        P_u = self.P_u[J-1]
+        P_p = self.P_p[J-1]
+        R_u = self.R_u[J-1]
+        R_p = self.R_p[J-1]
         
-        ru = r[:2*self.Nu[J]]
-        rp = r[2*self.Nu[J]:]
+        ru = r[:3*self.Nu[J]]
+        rp = r[3*self.Nu[J]:]
         
         # pre-smoothing
-        eu, ep = self.smoothing(bm.zeros((2*self.Nu[J],)),bm.zeros((self.Np[J],)),ru,rp,J)
+        eu, ep = self.smoothing(bm.zeros((3*self.Nu[J],)),bm.zeros((self.Np[J],)),ru,rp,J)
         if self.smoothing_times == 2:
             eu, ep = self.smoothing(eu,ep,ru,rp,J)
 
@@ -667,16 +669,16 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         rru = ru - self.Ai[J] @ eu - self.Bi[J].T @ ep
         rrp = rp - self.Bi[J] @ eu
 
-        ruc = Res_u @ rru
-        rpc = Res_p @ rrp
+        ruc = R_u @ rru
+        rpc = R_p @ rrp
         
         # coarse grid correction
         rc = bm.concat([ruc, rpc], axis=0)
         ec = self.vcycle(rc, J-1)
 
         # correction on the fine grid
-        tempeu = Pro_u @ ec[:2*self.Nu[J-1]]
-        tempep = Pro_p @ ec[2*self.Nu[J-1]:]
+        tempeu = P_u @ ec[:3*self.Nu[J-1]]
+        tempep = P_p @ ec[3*self.Nu[J-1]:]
         eu = tempeu + eu
         ep = tempep + ep
 
@@ -771,7 +773,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         # initial set up
         
         self.setup(stokes_operator)
-        import ipdb;ipdb.set_trace()
+        self.logger.info(f'Step 4. setup 完成\n')
         bigF = F
         bigu = bm.zeros_like(F)
         bigr = bigF - self.bigAi[-1] @ bigu
@@ -780,12 +782,12 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         nb = bm.linalg.norm(bigF)
         err = bm.zeros((self.maxIt, 1), dtype=bm.float64)
         err[0] = bm.linalg.norm(bigr) / nb
-
+        self.logger.info(f'Step 5. 进入主循环迭代\n')
         while (bm.max(err[k]) > self.tol) & (k <= self.maxIt):
             k = k + 1
-            if self.solver == 'VCYCLE':
+            if self.cycle_type == 'VCYCLE':
                 bigerru = self.vcycle(bigr)
-            elif self.solver == 'WCYCLE':
+            elif self.cycle_type == 'WCYCLE':
                 bigerru = self.wcycle(bigr)
             bigu = bigu + bigerru
             bigr = bigr - self.bigAi[-1] @ bigerru
@@ -801,16 +803,16 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         itStep = k
         u = bigu[:3*self.Nu[-1]]
         p = bigu[3*self.Nu[-1]:]
-
+        self.logger.info(f'Step 6. 程序结束, 开始输出打印结果\n')
         # Output
         print(f"iter: {itStep:2.0f},  "
             f"err = {max(err[-1]):8.4e},  "
-            f"coarse grid: {self.A[-1].shape[0]:2.0f},  ")
-
+            f"coarse grid: {self.bigAi[0].shape[0]:2.0f},  ")
+        
         if k > self.maxIt:
             print("NOTE: the iterative method does not converge!")
 
-        return u, p
+        return bigu
 
     @solve.register('amg')
     def solve(self, A, F):
@@ -820,9 +822,9 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         tmr = timer()
         next(tmr)
         stokes_operator, A, F = self.linear_system()
-        tmr.send(f'初步组装线性系统时间')
+        self.logger.info(f'Step 1. 完成初步线性系统组装\n')
         BdDof, F1 = self.apply_bc(stokes_operator, bm.copy(F))
-        
+        self.logger.info(f'Step 2. 完成边界自由度处理\n')
         # BC = DirichletBC(
         #     (self.uspace, self.pspace),
         #     gd=(self.velocity_dirichlet, self.pressure_dirichlet),
@@ -842,15 +844,16 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             bd_flag = bm.zeros((len(F),), dtype=bm.bool)
             bm.set_at(bd_flag, BdDof, True)
             F1 = F1[~bd_flag]
+            self.logger.info(f'Step 3. 开始多重网格setup阶段\n')
             x = self.solve['mg'](stokes_operator, F1)
         tmr.send(f'求解器时间')
         next(tmr)
         print(time.time() - start)
-        ugdof = 3*self.n_u0
+        ugdof = 3*stokes_operator.n_u0
         uh = x[:ugdof]
         ph = x[ugdof:]
         print(ph.max(),uh.max())
-        self.post_process(uh ,ph)
+        # self.post_process(uh ,ph)
         return uh, ph
     
     def error(self):
