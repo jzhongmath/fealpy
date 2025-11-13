@@ -8,20 +8,25 @@ from ..sparse import csr_matrix
 
 CoefLike = Union[float, int, TensorLike, Callable[..., TensorLike]]
 
-def indofP2(mesh: TriangleMesh, threshold=None):
+def indofP2(mesh: TriangleMesh, threshold=None, return_index=False, tensor_mesh=False):
     space = LagrangeFESpace(mesh, p=2)
     isDDof = space.is_boundary_dof()
-    tip = mesh.interpolation_points(p=2)
-    points = bm.concat([tip,bm.zeros((len(tip),1), dtype=bm.float64)], axis=1)
-    
+    points = mesh.interpolation_points(p=2)
+    if tensor_mesh:
+        points = bm.concat([points, bm.zeros((len(points),1), dtype=bm.float64)], axis=1)
+
     index_dof = bm.arange(len(points))[isDDof]
     bd_point = points[isDDof] 
-    flag = threshold(bd_point, dim=2)
+    if tensor_mesh:
+        flag = threshold(bd_point, dim=2)
+    else:
+        flag = threshold(bd_point)
     index_dof = index_dof[flag]
 
     bd_flag = bm.zeros((len(points),), dtype=bm.bool)
     bm.set_at(bd_flag, index_dof, True)
-
+    if return_index:
+        return ~bd_flag, index_dof
     return ~bd_flag
 
 def transferP2red(mesh: TriangleMesh, level:int, threshold:Optional[Tuple[CoefLike,...]]=None):
@@ -117,7 +122,7 @@ def transferP2red(mesh: TriangleMesh, level:int, threshold:Optional[Tuple[CoefLi
         Ndoff = mesh.number_of_global_ipoints(p=2)
         P = P2red(NTc, c2i0, c2i1, Ndofc, Ndoff)
         if threshold != None:
-            P = P.to_scipy()[flag1][:,flag0]
+            P = P.to_scipy()[bm.to_numpy(flag1)][:,bm.to_numpy(flag0)]
         Pro_u.append(P)
 
     return Pro_u

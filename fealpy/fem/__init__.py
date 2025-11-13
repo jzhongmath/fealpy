@@ -78,3 +78,4 @@ from .dld_microfluidic_chip_lfem_model_3d import DLDMicrofluidicChipLFEMModel3D
 from .curlcurl_upml_model import CurlCurlUPMLModel
 from .mgtensor_possion_lfem_model import MGTensorPossionLFEMModel
 from .mgtensor_stokes_lfem_model import MGTensorStokesLFEMModel
+from .wpr_lfem_model import WPRLFEMModel

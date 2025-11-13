@@ -155,7 +155,8 @@ class IntervalMesh(SimplexMesh,Plotable):
             cell = self.entity('cell')
             w = bm.zeros((p-1,2), dtype=bm.float64)
             w[:,0] = bm.arange(p-1, 0, -1)/p
-            w[:,1] = w[-1::-1, 0]
+            w[:,1] = bm.flip(w[:, 0], axis=[0])
+            # w[:,1] = w[-1::-1, 0]
             GD = self.geo_dimension()
             ipoint[NN:NN+(p-1)*NC] = bm.einsum('ij, kj...->ki...', w,
                     node[cell]).reshape(-1, GD)

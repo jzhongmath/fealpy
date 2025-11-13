@@ -72,7 +72,14 @@ class PressWorkIntegrator(LinearInt, OpInt, CellInt):
             gphi = gphi
         else:
             gphi = bm.einsum('...ii->...', gphi)
+        
         result = bilinear_integral(gphi, phi, ws, cm, val, batched=self.batched)
+        del gphi
+        del phi
+        del ws
+        del cm
+        del val
+
         return result
 
     @assembly.register('isopara')

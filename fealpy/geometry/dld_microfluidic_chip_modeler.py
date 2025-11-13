@@ -169,17 +169,17 @@ class DLDMicrofluidicChipModeler:
         p_last = all_v[-1] + bm.array([[h2, 0]], dtype=bm.float64)
 
         if (h1 ==0) and (h2 ==0):
-            self.boundary = bm.concat([all_v, all_v[::-1] + h_trans], axis=0)
+            self.boundary = bm.concat([all_v, bm.flip(all_v, axis=[0]) + h_trans], axis=0)
             self.inlet_boundary = self.boundary[[0, 3], :]
             self.outlet_boundary = self.boundary[[1, 2], :]
             self.wall_boundary = self.boundary[[0, 1, 2, 3], :]
         else:
             right = bm.concat([p_last, p_last + h_trans], axis=0)
-            self.boundary = bm.concat([p0, all_v, right, all_v[::-1] + h_trans, p0 + h_trans], axis=0)
+            self.boundary = bm.concat([p0, all_v, right, bm.flip(all_v, axis=[0]) + h_trans, p0 + h_trans], axis=0)
             self.inlet_boundary = self.boundary[[0, -1], :]
             self.outlet_boundary = bm.concat([p_last, p_last + h_trans], axis=0)
             bottom = bm.concat([p0, bm.repeat(all_v, 2, axis=0)], axis=0)
-            top = bm.concat([bm.repeat(all_v[::-1] + h_trans, 2, axis=0), p0 + h_trans], axis=0)
+            top = bm.concat([bm.repeat(bm.flip(all_v, axis=[0]) + h_trans, 2, axis=0), p0 + h_trans], axis=0)
             self.wall_boundary = bm.concat([bottom, right, top], axis=0)
 
         # Generate pillar centers

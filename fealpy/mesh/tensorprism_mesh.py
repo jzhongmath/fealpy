@@ -37,6 +37,18 @@ class TensorPrismMesh(HomogeneousMesh, Plotable):
         self.ccw = bm.array([0, 1, 2, 3], **kwargs)
         self.construct()
 
+        from .prism_mesh import PrismMesh
+        import matplotlib.pyplot as plt
+        fig = plt.figure()
+        axes = fig.add_subplot(111, projection='3d')
+        node = self.entity('node')
+        cell = self.entity('cell')
+        mesh = PrismMesh(node, cell)
+        mesh.add_plot(axes, cellcolor="#80e673")
+        # mesh.find_node(axes=axes, showindex=True, fontsize='20')
+        # mesh.find_cell(axes=axes, showindex=True, fontsize='20')
+        plt.show()
+
         self.nodedata = {}
         self.celldata = {}
         self.meshdata = {}

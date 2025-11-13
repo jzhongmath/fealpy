@@ -1,7 +1,8 @@
-
+from ..typing import Union
 from ..backend import backend_manager as bm
 from ..sparse import COOTensor, CSRTensor
 import numpy as np
+import cupy as cp
 
 def _mumps_solve(A, b):
     """Solve a linear system using MUMPS.
@@ -48,7 +49,7 @@ def _scipy_solve(A, b):
     from scipy.sparse.linalg import spsolve as spsol 
     from scipy.sparse import csr_matrix
 
-    A = A.to_scipy()
+    # A = A.to_scipy()
     b = bm.to_numpy(b)
     return spsol(A, b)
 
@@ -62,19 +63,23 @@ def _to_cupy_data(A, b):
     Returns:
         Tuple: The converted tensors.
     """
-    import cupy as cp
-    if isinstance(A.indices, np.ndarray): # numpy backend
-        A =  A.to_scipy() 
-        A = cp.sparse.csr_matrix(A.astype(cp.float64))
-    elif A.indices.device.type == "cpu": # torch backend
-        A = A.device_put("cuda")
-        indices = cp.from_dlpack(A.indices)
-        data = cp.from_dlpack(A.values)
-        A = cp.sparse.csr_matrix((data, (indices[0], indices[1])), shape=A.shape)
-    else:
-        indices = cp.from_dlpack(A.indices)
-        data = cp.from_dlpack(A.values)
-        A = cp.sparse.csr_matrix((data, (indices[0], indices[1])), shape=A.shape)
+    # import cupy as cp
+    # if isinstance(A.indices, np.ndarray): # numpy backend
+    # A =  A.to_scipy() 
+    A = cp.sparse.csr_matrix(A.astype(cp.float64))
+    # elif A.indices.device.type == "cpu": # torch backend
+    #     A = A.device_put("cuda")
+    #     indices = cp.from_dlpack(A.indices)
+    #     data = cp.from_dlpack(A.values)
+    #     A = cp.sparse.csr_matrix((data, (indices[0], indices[1])), shape=A.shape)
+    # else:
+    
+        # row = cp.from_dlpack(A.row)
+        # col = cp.from_dlpack(A.col)
+        # # indices = cp.from_dlpack(A.indices)
+        # data = cp.from_dlpack(A.values)
+        # A = cp.sparse.csr_matrix((data, (row, col)), shape=A.shape)
+    # A = cp.sparse.csr_matrix((data, (indices[0], indices[1])), shape=A.shape)
 
     if isinstance(b, np.ndarray) or b.device.type == "cpu":
         b = bm.to_numpy(b)
@@ -93,9 +98,9 @@ def _cupy_solve(A, b):
     Returns:
         Tensor: The solution of the linear system.
     """
-    import cupy as cp
-    from cupyx.scipy.sparse.linalg import spsolve as spsol
 
+    from cupyx.scipy.sparse.linalg import spsolve as spsol
+    
     iscpu = isinstance(b, np.ndarray) or b.device.type == "cpu"
     A, b = _to_cupy_data(A, b)
     x = spsol(A,b)
@@ -103,7 +108,7 @@ def _cupy_solve(A, b):
         x = cp.asnumpy(x)
     return x
 
-def spsolve(A:[COOTensor, CSRTensor], b, solver:str="mumps"):
+def spsolve(A:Union[COOTensor, CSRTensor], b, solver:str="mumps"):
     """Solve a linear system using a direct solver.
 
     Parameters:
@@ -119,7 +124,7 @@ def spsolve(A:[COOTensor, CSRTensor], b, solver:str="mumps"):
     elif solver == "scipy":
         return bm.tensor(_scipy_solve(A, b))
     elif solver == "cupy":
-        A = A.tocoo()
+        # A = A.tocoo()
         return bm.tensor(_cupy_solve(A, b))
     else:
         raise ValueError(f"Unknown solver: {solver}")
@@ -136,15 +141,16 @@ def _cupy_spsolve_triangular(A, b, lower=True):
     """
     import cupy as cp
     from cupyx.scipy.sparse.linalg import spsolve_triangular as spsol_tri
-
+    
     iscpu = isinstance(b, np.ndarray) or b.device.type == "cpu"
     A, b = _to_cupy_data(A, b)
-    x = spsol(A, b, lower=lower)
+    
+    x = spsol_tri(A, b, lower=lower)
     if iscpu:
         x = cp.asnumpy(x)
     return x
 
-def _mumps_spsolve_triangular(A:[COOTensor, CSRTensor], b, lower=True):
+def _mumps_spsolve_triangular(A:Union[COOTensor, CSRTensor], b, lower=True):
     """Sovle a triangular system using mumps on cpu
     Parameters:
         A(COOTensor | CSRTensor): The upper or lower matrix of the linear system.
@@ -166,7 +172,7 @@ def _mumps_spsolve_triangular(A:[COOTensor, CSRTensor], b, lower=True):
     return x
 
 
-def spsolve_triangular(A:[COOTensor, CSRTensor], b, lower=True):
+def spsolve_triangular(A:Union[COOTensor, CSRTensor], b, lower=True):
     """Solve a triangular system Ax = b
     Parameters:
         A(COOTensor | CSRTensor): The upper or lower triangular matrix of the linear system.

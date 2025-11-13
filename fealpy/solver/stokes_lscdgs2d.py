@@ -35,7 +35,7 @@ class StokesLSCDGS():
             }
 
         self.Bt = auxMat.get('Bt')
-        # self.BBt = auxMat.get('BBt')
+        self.BBt = auxMat.get('BBt')
         self.BABt = auxMat.get('BABt')
         self.Su = auxMat.get('Su')
         self.Su0 = auxMat.get('Su0')

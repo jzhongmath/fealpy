@@ -91,8 +91,8 @@ class _MumpsBaseContext(object):
         n = A.shape[0]
         assert A.shape == (n, n), "Expected a square matrix."
         self.set_shape(n)
-        row = np.astype(np.from_dlpack(A.row+1), 'i')
-        col = np.astype(np.from_dlpack(A.col+1), 'i')
+        row = np.from_dlpack(A.row+1).astype('i')
+        col = np.from_dlpack(A.col+1).astype('i')
         self.set_centralized_assembled(row, col, A.data)
 
 

@@ -14,8 +14,8 @@ def bicgstab(
     A: SupportsMatmul,
     b: TensorLike,
     x0: Optional[TensorLike] = None,
-    atol: float = 1e-8,
-    rtol: float = 1e-8,
+    atol: float = 1e-18,
+    rtol: float = 1e-18,
     maxit: Optional[int] = None,
     M: Optional[SupportsMatmul] = None
 ) -> tuple[TensorLike, dict]:

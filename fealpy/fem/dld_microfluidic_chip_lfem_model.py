@@ -13,8 +13,9 @@ from fealpy.fem import LinearForm, BilinearForm, BlockForm, LinearBlockForm
 from fealpy.fem import ScalarDiffusionIntegrator as DiffusionIntegrator
 from fealpy.fem import DirichletBC, StokesDirichletBC
 from fealpy.fem import PressWorkIntegrator, SourceIntegrator
-from fealpy.solver import StokesLSCDGS, cg, spsolve, transferP1red, transferP2red
+from fealpy.solver import StokesLSCDGS, cg, spsolve, transferP1red, transferP2red, indofP1, indofP2
 from fealpy.sparse import spdiags, coo_matrix, csr_matrix
+from fealpy.sparse.ops import bmat
 
 import scipy.sparse as sp
 import scipy.sparse.linalg as lg
@@ -79,7 +80,8 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         self.coarse_count = 0
         self.smoothing_count = 0
 
-        self.mul_time = 0
+        self.SGS_time = 0
+        self.MUL_time = 0
 
     def set_init_mesher(self, mesher: DLDMicrofluidicChipMesher):
         """
@@ -240,11 +242,12 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         Assemble the linear system for the Stokes equations.
         """
         GD = self.mesh.geo_dimension()
+        self.u0space = functionspace(self.mesh, ('Lagrange', self.p))
         self.uspace = functionspace(self.mesh, ('Lagrange', self.p), shape=(GD, -1))
         self.pspace = functionspace(self.mesh, ('Lagrange', self.p-1))
-        print(self.uspace.number_of_global_dofs() + self.pspace.number_of_global_dofs())
+        print(self.u0space.number_of_global_dofs()*2 + self.pspace.number_of_global_dofs())
         
-        A00 = BilinearForm(self.uspace)
+        A00 = BilinearForm(self.u0space)
         self.BD = DiffusionIntegrator()
         self.BD.coef = 1.0
         A00.add_integrator(self.BD)
@@ -291,16 +294,21 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
 
         return A, L
 
-    def setup(self, A, B):
+    def setup(self, A0, B):
         """Compute restriction and interpolation operators.
         """
-        A = A.to_scipy()
-        B = B.to_scipy()
+        A = sp.bmat([[A0, None],[None, A0]]).tocsr()
+
         level = self.level
+        A0i = [None] * level
         Ai = [None] * level
         Bi = [None] * level
         bigAi = [None] * level
         
+        Pro_u = [None] * level
+        Pro_p = [None] * level
+
+        A0i[-1] = A0
         Ai[-1] = A
         Bi[-1] = B
         
@@ -308,53 +316,52 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
 
         Nu = bm.zeros((level,), dtype=bm.int32)
         Np = bm.zeros((level,), dtype=bm.int32)
-        Nu[-1] = Ai[-1].shape[0] // 2
+        Nu[-1] = A0i[-1].shape[0]
         Np[-1] = Bi[-1].shape[0]
 
         # Compute Pro and Res of u and p.
-        Pro_p = transferP1red(self.mesh0, self.level)
-        Pro_u = transferP2red(self.mesh1, self.level)
-        Res_u = [None] * level
-        Res_p = [None] * level
-
+        P_p = transferP1red(self.mesh0, self.level, self.is_pressure_boundary)
+        P_u = transferP2red(self.mesh1, self.level, self.is_velocity_boundary)
+        
         for i in range(self.level - 1):
-            Pro_u[i] = sp.block_diag([Pro_u[i].to_scipy(),Pro_u[i].to_scipy()])
-            Pro_p[i] = Pro_p[i].to_scipy()
-            Res_u[i] = Pro_u[i].T
-            Res_p[i] = Pro_p[i].T
+            Pro_u[i] = sp.block_diag([P_u[i], P_u[i]])
+            Pro_p[i] = P_p[i]
         
         for j in range(level - 1, 0, -1):
-            # Ac = Res*Af*Pro
-            Ai[j-1] = Res_u[j-1] @ Ai[j] @ Pro_u[j-1]
-            Bi[j-1] = Res_p[j-1] @ Bi[j] @ Pro_u[j-1]
-            Nu[j-1] = Ai[j-1].shape[0] // 2
+            A0i[j-1] = P_u[j-1].T @ A0i[j] @ P_u[j-1]
+            Bi[j-1] = Pro_p[j-1].T @ Bi[j] @ Pro_u[j-1]
+            Nu[j-1] = A0i[j-1].shape[0]
             Np[j-1] = Bi[j-1].shape[0]
+            Ai[j-1] = sp.bmat([[A0i[j-1], None],[None, A0i[j-1]]]).tocsr()
             bigAi[j-1] = (sp.bmat([[Ai[j-1], Bi[j-1].T],[Bi[j-1], None]]).tocsr())
-
+            
         Ndof = 2 * Nu + Np
         auxMat = [None] * level
         
         self.Pro_u = Pro_u
         self.Pro_p = Pro_p
-        self.Res_u = Res_u
-        self.Res_p = Res_p
 
         for k in range(1, level): 
             Bt = Bi[k].T
             BBt = Bi[k] @ Bt
             BABt = Bi[k] @ Ai[k] @ Bt
+            Su0 = sp.tril(A0i[k]).tocsr()
             Su = sp.tril(Ai[k]).tocsr()
             Sp = sp.tril(BBt).tocsr()
             Spt = sp.triu(BBt).tocsr()
-            DSp = BBt.diagonal()
+            DSp = sp.diags_array(1/BBt.diagonal())
+            invSp = Sp @ DSp
+            invSpt = Spt @ DSp
             auxMat[k] = {
                 'Bt': Bt,
                 'BBt': BBt,
                 'BABt': BABt,
+                'Su0': Su0,
                 'Su': Su,
                 'Spt': Spt,
                 'Sp': Sp,
-                'DSp': DSp
+                'invSpt': invSpt,
+                'invSp': invSp
             }
         self.Ai = Ai
         self.Bi = Bi
@@ -364,26 +371,25 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         self.bigAi = bigAi
         self.auxMat = auxMat
 
-    def vcycle(self, r, J=None):
+    def vcycle(self, ru, rp, J=None):
         if J is None:
             J = self.level - 1
         if J == 0:
-            import pyamg
+            r = bm.concat([ru, rp], axis=0)
+            n = len(rp)
             start = time.time()
-            # mg = pyamg.ruge_stuben_solver(self.bigAi[J])
-            # e = mg.solve(r)
-            e = spsolve(self.bigAi[J], r)
+            e = spsolve(self.bigAi[J], r, 'mumps')
             self.coarse_count += 1
             self.coarse_time += time.time() - start
-            return e
+            return e[:-n], e[-n:]
         
         Pro_u = self.Pro_u[J-1]
         Pro_p = self.Pro_p[J-1]
-        Res_u = self.Res_u[J-1]
-        Res_p = self.Res_p[J-1]
+        Res_u = Pro_u.T
+        Res_p = Pro_p.T
         
-        ru = r[:2*self.Nu[J]]
-        rp = r[2*self.Nu[J]:]
+        # ru = r[:2*self.Nu[J]]
+        # rp = r[2*self.Nu[J]:]
         
         # pre-smoothing
         eu, ep = self.smoothing(bm.zeros((2*self.Nu[J],)),bm.zeros((self.Np[J],)),ru,rp,J)
@@ -398,39 +404,40 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         rpc = Res_p @ rrp
         
         # coarse grid correction
-        rc = bm.concat([ruc, rpc], axis=0)
-        ec = self.vcycle(rc, J-1)
+        # rc = bm.concat([ruc, rpc], axis=0)
+        # ec = self.vcycle(ruc, rpc, J-1)
+        euc, epc = self.vcycle(ruc, rpc, J-1)
 
         # correction on the fine grid
-        tempeu = Pro_u @ ec[:2*self.Nu[J-1]]
-        tempep = Pro_p @ ec[2*self.Nu[J-1]:]
-        eu = tempeu + eu
-        ep = tempep + ep
+        tempeu = Pro_u @ euc
+        tempep = Pro_p @ epc
+        eu += tempeu
+        ep += tempep
 
         # post-smoothing
         eu, ep = self.smoothing(eu,ep,ru,rp,J)
         if self.smoothing_times == 2:
             eu, ep = self.smoothing(eu,ep,ru,rp,J)
-        e = bm.concat([eu, ep], axis=0)
-        return e       
+        # e = bm.concat([eu, ep], axis=0)
+        return eu, ep  
 
-    def wcycle(self, r, J=None): 
+    def wcycle(self, ru, rp, J=None): 
         if J is None:
             J = self.level - 1
+            
         if J == 0:
-            e = bm.zeros_like(r)
+            r = bm.concat([ru, rp], axis=0)
+            n = len(rp)
             start = time.time()
-            # e[:-1] = lg.spsolve(self.bigAi[J].tocsr()[:-1, :-1], r[:-1])
-            e = lg.spsolve(self.bigAi[J].tocsr(), r)
-            self.coarse_time += time.time() - start
+            e = spsolve(self.bigAi[J], r, 'mumps')
             self.coarse_count += 1
-            return e
+            self.coarse_time += time.time() - start
+            return e[:-n], e[-n:]
         
-        Res_u = self.Pro_u[J-1].T
-        Res_p = self.Pro_p[J-1].T
-        
-        ru = r[:2*self.Nu[J]]
-        rp = r[2*self.Nu[J]:]
+        Pro_u = self.Pro_u[J-1]
+        Pro_p = self.Pro_p[J-1]
+        Res_u = Pro_u.T
+        Res_p = Pro_p.T
         
         # pre-smoothing
         eu, ep = self.smoothing(bm.zeros((2*self.Nu[J],)),bm.zeros((self.Np[J],)),ru,rp,J)
@@ -441,27 +448,29 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         rru = ru - self.Ai[J] @ eu - self.Bi[J].T @ ep
         rrp = rp - self.Bi[J] @ eu
 
-        ruc = (Res_u @ rru.reshape(2, -1).T).reshape(-1, order='F')
+        ruc = Res_u @ rru
         rpc = Res_p @ rrp
         
         # coarse grid correction
-        rc = bm.concat([ruc, rpc], axis=0)
-        ec = self.wcycle(rc, J-1)
+        ruc0, rpc0 = self.wcycle(ruc, rpc, J-1)
         # once more for w-cycle
-        ec = ec + self.wcycle(rc - self.bigAi[J-1] @ ec,J-1)
+        euc0, epc0 = self.wcycle(ruc - self.Ai[J-1] @ ruc0 - self.Bi[J-1].T @ rpc0, rpc - self.Bi[J-1] @ ruc0,J-1)
+
+        ruc0 += euc0
+        rpc0 += epc0
 
         # correction on the fine grid
-        tempeu = (self.Pro_u[J-1] @ (ec[:2*self.Nu[J-1]].reshape(2, -1).T)).reshape(-1, order='F')
-        tempep = self.Pro_p[J-1] @ ec[2*self.Nu[J-1]:]
-        eu = tempeu + eu
-        ep = tempep + ep
+        tempeu = Pro_u @ ruc0
+        tempep = Pro_p @ rpc0
+        eu += tempeu
+        ep += tempep
 
         # post-smoothing
         eu, ep = self.smoothing(eu,ep,ru,rp,J)
         if self.smoothing_times == 2:
             eu, ep = self.smoothing(eu,ep,ru,rp,J)
-        e = bm.concat([eu, ep], axis=0)
-        return e       
+        
+        return eu, ep   
     
     def smoothing(self, u, p, f, g, J):
         """Solve LUe = r.
@@ -472,12 +481,61 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         B = self.Bi[J]
         start = time.time()
         smoother = StokesLSCDGS(auxMat,smootherOpt)
-        u, p, self.mul_time = smoother.run(u,p,f,g,A,B,self.mul_time)
+        u, p, self.SGS_time, self.MUL_time = smoother.run(u,p,f,g,A,B,self.SGS_time,self.MUL_time)
         t = time.time() - start
         print(t)
         self.smoothing_time += t
         self.smoothing_count += 1
         return u, p
+
+    def boundary_dof_index(self):
+        isDDof0 = self.mesh.boundary_node_flag()
+        isDDof1 = self.u0space.is_boundary_dof()
+
+        return (isDDof0, isDDof1)
+
+    def interpolation_points(self):
+        p0 = self.mesh.interpolation_points(p=1)
+        p1 = self.mesh.interpolation_points(p=2)
+           
+        return (p1, p0)
+    
+    def apply_bc(self, A0, B, F):
+        n_A = 2*A0.shape[0] + B.shape[0]
+        uh = bm.zeros((n_A,), dtype=bm.float64)
+        gd = (self.velocity_dirichlet, self.pressure_dirichlet)       
+        points = self.interpolation_points() 
+
+        inflag_u, idx0 = indofP2(self.mesh, threshold=self.is_velocity_boundary, return_index=True)
+        inflag_p, idx1 = indofP1(self.mesh, threshold=self.is_pressure_boundary, return_index=True)
+
+        flag = [inflag_u, inflag_p]
+        idx = [idx0, idx1 + 2*len(points[1])]
+
+        BdDof = []
+        for i in range(2):
+            val = gd[i](points[i][~flag[i]])
+            index_dof = idx[i]
+            if i == 0:
+                index_dof = bm.concat([index_dof, index_dof + len(points[0])], axis=0)
+                val = val.T.reshape(-1)
+
+            BdDof.append(index_dof)
+            isBdDof = bm.zeros(n_A, dtype=bm.bool)
+            isBdDof = bm.set_at(isBdDof, index_dof, True)
+            uh = bm.set_at(uh, (..., isBdDof), val)
+
+        BdDof = bm.concat([BdDof[0], BdDof[1]], axis=0)
+        A = bmat([[A0, None],[None, A0]])
+        bigA = bmat([[A, B.T], [B, None]])
+        F = F - bigA @ uh
+        F = bm.set_at(F, BdDof, uh[BdDof])
+
+        Biginflag_u = bm.concat([inflag_u, inflag_u], axis=0)
+        A0 = A0.to_scipy()[inflag_u][:,inflag_u]
+        B = B.to_scipy()[inflag_p][:,Biginflag_u]
+
+        return A0, B, F, BdDof
 
     @variantmethod('direct')
     def solve(self, A, F, solver='mumps'):
@@ -488,28 +546,29 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         return spsolve(A, F, solver = 'mumps')
 
     @solve.register('mg')
-    def solve(self, A, B, f, g):
+    def solve(self, A0, B, F):
         # initial set up
-        u = bm.zeros_like(f)
-        p = bm.zeros_like(g)
-        self.setup(A, B.T)
+        self.setup(A0, B)
         
-        bigF = bm.concat([f,g-bm.mean(g)], axis=0)
-        bigu = bm.concat([u, p], axis=0)
+        bigF = F
+        bigu = bm.zeros_like(F)
         bigr = bigF - self.bigAi[-1] @ bigu
 
         k = 0
         nb = bm.linalg.norm(bigF)
         err = bm.zeros((self.maxIt, 1), dtype=bm.float64)
-        err[0] = bm.linalg.norm(bigr) / nb
+        err[0] = bm.linalg.norm(bigr)
+        
         print(f'2. set_up完成, 开始执行多重网格方法\n')
         start = time.time()
         while (bm.max(err[k]) > self.tol) & (k < self.maxIt - 1):
             k = k + 1
+            # import ipdb;ipdb.set_trace()
             if self.cycle_type == 'VCYCLE':
-                bigerru = self.vcycle(bigr)
+                eu, ep = self.vcycle(bigr[:-self.Np[-1]], bigr[-self.Np[-1]:])
             elif self.cycle_type == 'WCYCLE':
-                bigerru = self.wcycle(bigr)
+                eu, ep = self.wcycle(bigr[:-self.Np[-1]], bigr[-self.Np[-1]:])
+            bigerru = bm.concat([eu, ep])
             bigu = bigu + bigerru
             bigr = bigr - self.bigAi[-1] @ bigerru
 
@@ -521,76 +580,82 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
                 f'err = {err[k][0]:8.4e},   '
                 f'Ndof = {self.Ndof[-1]}\n'
             )
-        err = err[:k+1]
+        err = err[:k]
         itStep = k
-        u = bigu[:2*self.Nu[-1]]
-        p = bigu[2*self.Nu[-1]:]
         cost = time.time() - start
+        self.logger.info(f'Step 6. 程序结束, 开始输出打印结果\n')
         # Output
         print(f"iter: {itStep:2.0f},  "
-            f"err = {err[-1][0]:8.4e}\n"
-            f"level = {self.level}\n"
-            f"coarse grid: {self.Bi[0].shape[0]:2.0f}\n"
-            f"coarse dofs: {self.Ndof[0]:2.0f}\n"
+            f"err = {max(err[-1]):8.4e},  "
+            f"level = {self.level},   "
+            f"total dof: {self.bigAi[-1].shape[0]:2.0f}"
+            f"coarse dof: {self.bigAi[0].shape[0]:2.0f}\n\n"
             f"total time in coarsest grid: {self.coarse_time}\n"
-            f"total time: {cost}\n"
-            f"points: {self.coarse_time / cost},  "
-            f"coarse count: {self.coarse_count}")
+            f"total time in SGS: {self.SGS_time}\n"
+            f"total time in MUL of smoothing: {self.MUL_time}\n"
+            f"total time in smoothing: {self.smoothing_time}\n"
+            f"total time: {cost}\n\n"
+            f"粗网格上求解次数: {self.coarse_count}\n"
+            f"粗网格总时间占比: {self.coarse_time / cost},  \n"
+            f"SGS平滑总时间占比: {self.SGS_time / cost},  \n"
+            f"平滑@计算总时间占比: {self.MUL_time / cost},  \n"
+            f"Smoothing总时间占比: {self.smoothing_time / cost},   \n"
+            f"粗网格和平滑总时间占比: {(self.coarse_time+self.smoothing_time) / cost}")
 
         if k > self.maxIt:
             print("NOTE: the iterative method does not converge!")
 
-        return u, p
+        return bigu
 
     @variantmethod('one_step')
     def run(self):
         A00, A01, L0, L1 = self.linear_system()
         pdof = self.pspace.number_of_global_dofs()
+        self.solver = 'direct'
+
+        pdof = L1.shape[0]
         if self.solver == 'direct':
-            bigA0 = BlockForm([[A00, A01], [A01.T, None]]).assembly()
+            A0 = A00.assembly()
+            A = bmat([[A0, None],[None, A0]])
+            Bt = A01.assembly()
+            bigA0 = bmat([[A, Bt], [Bt.T, None]])
             bigF0 = LinearBlockForm([L0, L1]).assembly()
 
             BC = DirichletBC(
                 (self.uspace, self.pspace), 
-                gd=self.velocity_dirichlet,
-                threshold=self.is_velocity_boundary,
+                gd=(self.velocity_dirichlet,self.pressure_dirichlet),
+                threshold=(self.is_velocity_boundary,self.is_pressure_boundary),
                 method='interp'
             )
 
             bigA0, bigF0 = BC.apply(bigA0, bigF0)
-            bigF0[-pdof:] = bigF0[-pdof:] - bm.mean(bigF0[-pdof:])
+            # bigF0[-pdof:] = bigF0[-pdof:] - bm.mean(bigF0[-pdof:])
             bigA0 = bigA0.to_scipy()
-            import time
-            from fealpy.solver import gmres, lgmres
+            print(f'开始使用直接法进行求解')
             start = time.time()
             x = spsolve(bigA0, bigF0, 'mumps')
-            # x, _ = gmres(bigA0, bigF0)
             print(f'direct time: {time.time() - start}')
-            uh = x[:-pdof]
-            ph = x[-pdof:]
 
         elif self.solver == 'mg':
-            A = A00.assembly()
-            B = A01.assembly()
+            A0 = A00.assembly()
+            B = A01.assembly().T
             f = L0.assembly()
             g = L1.assembly()
-            StokesBC = StokesDirichletBC(
-                (self.uspace, self.pspace),
-                gd=self.velocity_dirichlet,
-                threshold=self.is_velocity_boundary,
-                method='interp'
-            )
-
-            A, B, f, g = StokesBC.apply(A, B, f, g)
-            print(f'1. 组装线性系统完成')
-            uh, ph = self.solve['mg'](A, B, f, g)        
-        
-        print(f'smoothing_time:{self.smoothing_time}')
-        print(f'smoothing_count:{self.smoothing_count}')
-        print(f'spsolve_triangular_time:{self.mul_time}')
+            F = bm.concat([f, g], axis=0)
+            A0, B, F, BdDof = self.apply_bc(A0, B, F)
+            bd_flag = bm.zeros((len(F),), dtype=bm.bool)
+            bm.set_at(bd_flag, BdDof, True)
+            self.logger.info(f'Step 3. 开始多重网格setup阶段\n')
+            
+            x_in = self.solve['mg'](A0, B, F[~bd_flag]) 
+            x = bm.set_at(F, ~bd_flag, x_in)       
+        # import ipdb;ipdb.set_trace()
+        uh = x[:-pdof]
+        ph = x[-pdof:]
         self.post_process(uh ,ph)
     
     def post_process(self, uh, ph):
+        
         self.mesh.nodedata['ph'] = ph
         self.mesh.nodedata['uh'] = uh.reshape(2,-1).T
         self.mesh.to_vtk('dld_chip.vtu')

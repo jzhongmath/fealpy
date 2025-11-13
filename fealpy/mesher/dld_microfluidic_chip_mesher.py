@@ -105,8 +105,7 @@ class DLDMicrofluidicChipMesher:
             node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
             if node_tags.size == 0:
                 raise RuntimeError("No nodes found in Gmsh model")
-                
-            node = bm.from_numpy(node_coords.reshape((-1, 3))[:, :2])
+            node = bm.tensor(node_coords.reshape((-1, 3))[:, :2])
             nodetags_map = {tag: idx for idx, tag in enumerate(node_tags)}
             
             return node, nodetags_map
@@ -141,6 +140,7 @@ class DLDMicrofluidicChipMesher:
         self.inlet_boundary = modeler.inlet_boundary
         self.outlet_boundary = modeler.outlet_boundary
         self.wall_boundary = modeler.wall_boundary
+
         try:
             if local_refine:
                 self.local_refine(gmsh, centers, radius, lc)
@@ -152,10 +152,10 @@ class DLDMicrofluidicChipMesher:
             gmsh.model.mesh.generate(2)
             gmsh.model.occ.synchronize()
 
-            if return_project_edges:
-                    self.project_edges = self.get_project_edges(
-                        gmsh, centers, radius, lc
-                    )
+            # if return_project_edges:
+            #         self.project_edges = self.get_project_edges(
+            #             gmsh, centers, radius, lc
+            #         )
             
             if return_mesh:
                     self.mesh = self.build_mesh(gmsh)
@@ -216,7 +216,7 @@ class DLDMicrofluidicChipMesher:
 
     def build_mesh(self, gmsh: Any) -> TriangleMesh:
         """Create TriangleMesh from Gmsh mesh data."""
-
+        
         node, nodetags_map = self.get_node_data(gmsh)
         cell_type = 2
         cell_tags, cell_connectivity = gmsh.model.mesh.getElementsByType(cell_type)
@@ -229,7 +229,6 @@ class DLDMicrofluidicChipMesher:
         
         unique, inverse = bm.unique(cell.ravel(), return_inverse=True)
         new_cell = inverse.reshape(cell.shape)
-        
         return TriangleMesh(node[unique], new_cell)
 
     def show(self, gmsh: Any) -> None:

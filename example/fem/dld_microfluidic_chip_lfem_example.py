@@ -64,7 +64,7 @@ parser.add_argument('--stage_length',
 
 # 
 parser.add_argument('--lc',
-    default = 0.03, type = float,
+    default = 0.013, type = float,
     help = "Grid size for meshing.")
 
 parser.add_argument('--show_figure',

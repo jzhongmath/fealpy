@@ -31,15 +31,15 @@ parser.add_argument('--outlet_length',
     help = "Length of the outlet section.")
 
 parser.add_argument('--radius',
-    default = 1 / (3 * 2), type = float,
+    default = 1 / (3 * 5), type = float,
     help = "Radius of the pillars.")
 
 parser.add_argument('--n_rows',
-    default = 1, type = int,
+    default = 3, type = int,
     help = "Number of rows of pillars in each stage.")
 
 parser.add_argument('--n_cols',
-    default = 1, type = int,
+    default = 3, type = int,
     help = "Number of columns of pillars in each stage.")
 
 parser.add_argument('--tan_angle',
@@ -55,7 +55,7 @@ parser.add_argument('--stage_length',
     help = "Number of stages (or periods) in the chip.")
 
 parser.add_argument('--lc',
-    default = 0.3, type = float,
+    default = 0.2/2, type = float,
     help = "Grid size for meshing.")
 
 parser.add_argument('--show_figure',
@@ -94,8 +94,11 @@ from fealpy.mesher import DLDMicrofluidicChipMesher
 
 import gmsh
 
-bm.set_backend(options['backend'])
 options = vars(parser.parse_args())
+
+# bm.set_backend('pytorch')
+bm.set_backend('numpy'); options['lc'] = 0.2/2
+# bm.set_default_device('cuda')
 
 gmsh.initialize()
 modeler = DLDMicrofluidicChipModeler(options)
@@ -108,7 +111,7 @@ gmsh.finalize()
 n = options['n']
 level = options['level']
 # imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=2*(level - 1)*n)
-imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=5)
+imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=3)
 
 
 model = MGTensorStokesLFEMModel(options=options)

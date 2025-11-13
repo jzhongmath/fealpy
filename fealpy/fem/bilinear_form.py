@@ -101,7 +101,8 @@ class BilinearForm(Form[LinearInt]):
         else:
             raise ValueError(f"Unsupported format {format}.")
         logger.info(f"Bilinear form matrix constructed, with shape {list(self._M.shape)}.")
-
+        
+        del M
         return self._M
 
     def mult(self, x: TensorLike, out: Optional[TensorLike]=None) -> TensorLike:

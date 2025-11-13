@@ -59,8 +59,16 @@ class CouplingMassIntegrator(LinearInt, OpInt, CellInt):
         bcs, ws, phi0, phi1, cm, index = self.fetch(space)
         val = process_coef_func(coef, bcs=bcs, mesh=mesh, etype='cell', index=index)
 
-        return bilinear_integral(phi1, phi0, ws, cm, val, batched=self.batched)
+        result = bilinear_integral(phi1, phi0, ws, cm, val, batched=self.batched)
 
+        del phi1
+        del phi0
+        del ws
+        del cm
+        del val
+
+        return result
+    
     @assembly.register('isopara')
     def assembly(self, space: _FS) -> TensorLike:
         """
