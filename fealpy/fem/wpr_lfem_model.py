@@ -34,8 +34,7 @@ import time
     P_p: 储存每层的Pro_p, 必要时传入Iz1.
     平滑过程:
     (1) A: 临时数组, 通过Ai的assembly获取.
-    (2) BB^T: 储存每层三维矩阵.
-    (3) BAB^T: 储存每层三维矩阵.
+    (2) BB^T, tril(BB^T), triu(BB^T), BAB^T: 储存每层三维矩阵.
 
 """
 
@@ -79,48 +78,17 @@ class KronOperator(LinearOperator):
 
 class StokesOperator(LinearOperator):
     def __init__(self, Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_):
-        self.Ax = Ax.assembly().to_scipy()
-        self.Mx = Mx.assembly().to_scipy()
-        self.Az = Az.assembly().to_scipy()
-        self.Mz = Mz.assembly().to_scipy()
-        self.Bx = Bx.assembly().to_scipy().T
-        self.Bz = Bz.assembly().to_scipy().T
-        self.Mx_ = Mx_.assembly().to_scipy().T
-        self.Mz_ = Mz_.assembly().to_scipy().T
-        self.inflag_uz = None
-        self.inflag_pz = None
-        self.inflag_u = None
-        self.inflag_p = None
-        self.BdDof = None
-        self.fix = False
-        self.res_mat = False
+        self.Ax = Ax
+        self.Mx = Mx
+        self.Az = Az
+        self.Mz = Mz
+        self.Bx = Bx
+        self.Bz = Bz
+        self.Mx_ = Mx_
+        self.Mz_ = Mz_
         self.set_up()
 
     def set_up(self):
-        if self.inflag_u is not None:
-            inflag_u = bm.to_numpy(self.inflag_u)
-            Biginflag_u = bm.to_numpy(bm.concat([self.inflag_u,self.inflag_u], axis=0))
-            inflag_uz = bm.to_numpy(self.inflag_uz)
-            self.fix = False
-            self.res_mat = True
-            self.Ax = self.Ax[inflag_u][:,inflag_u]
-            self.Mx = self.Mx[inflag_u][:,inflag_u]
-            self.Az = self.Az[inflag_uz][:,inflag_uz]
-            self.Mz = self.Mz[inflag_uz][:,inflag_uz]
-            if self.inflag_p is not None:
-                inflag_p = bm.to_numpy(self.inflag_p)
-                self.Bx = self.Bx[inflag_p][:,Biginflag_u]
-                self.Mx_ = self.Mx_[inflag_p][:,inflag_u]
-                self.Mz_ = self.Mz_[:,inflag_uz]
-                self.Bz = self.Bz[:,inflag_uz]
-                # self.Mz_ = self.Mz_[inflag_pz][:,inflag_uz]
-                # self.Bz = self.Bz[inflag_pz][:,inflag_uz]
-            else:
-                self.Bx = self.Bx[:,Biginflag_u]
-                self.Mx_ = self.Mx_[:,inflag_u]
-                self.Mz_ = self.Mz_[:,inflag_uz]
-                self.Bz = self.Bz[:,inflag_uz]
-
         self.n_Ax = self.Ax.shape[0]
         self.n_Mz = self.Mz.shape[0]
 
@@ -146,9 +114,6 @@ class StokesOperator(LinearOperator):
 
     def __matmul__(self, x):
         v = bm.copy(x)
-        if self.fix:
-            val = v[self.BdDof]
-            v = bm.set_at(v, self.BdDof, 0.0)
 
         U1 = bm.reshape(v[:self.n_u0], (self.n_Ax, self.n_Mz))
         U2 = bm.reshape(v[self.n_u0:2*self.n_u0], (self.n_Ax, self.n_Mz))
@@ -181,10 +146,7 @@ class StokesOperator(LinearOperator):
         l3 = bm.tensor(BU1.ravel()) + bm.tensor(BU2.ravel())
 
         y = bm.concat([l1, l2, l3], axis=0)
-        if self.fix:
-            bm.set_at(y, self.BdDof, val) 
-        elif not self.res_mat:
-            self.fix = True
+
         return y
 
 
@@ -437,46 +399,45 @@ class WPRLFEMModel(ComputationalModel):
 
         form00 = BilinearForm(self.tri_space1)
         form00.add_integrator(ScalarDiffusionIntegrator())
-        Ax = form00.assembly()
+        Ax = form00.assembly().to_scipy()
 
         form01 = BilinearForm(self.tri_space1)
         form01.add_integrator(ScalarMassIntegrator())
-        Mx = form01.assembly()
+        Mx = form01.assembly().to_scipy()
 
         form02 = BilinearForm(self.int_space1)
         form02.add_integrator(ScalarDiffusionIntegrator())
-        Az = form02.assembly()
+        Az = form02.assembly().to_scipy()
 
         form03 = BilinearForm(self.int_space1)
         form03.add_integrator(ScalarMassIntegrator())
-        Mz = form03.assembly()
+        Mz = form03.assembly().to_scipy()
 
         self.uspace2d = functionspace(self.tmesh, ('Lagrange', 2), shape=(2, -1))
         self.pspace2d = functionspace(self.tmesh, ('Lagrange', 1))
 
-        Bx = BilinearForm((self.pspace2d, self.uspace2d))
-        self.BPx = PressWorkIntegrator()
-        self.BPx.coef = -1.0
-        Bx.add_integrator(self.BPx)
-        Bx = Bx.assembly()
+        form10 = BilinearForm((self.pspace2d, self.uspace2d))
+        form10.add_integrator(PressWorkIntegrator(coef=-1.0))
+        Bx = form10.assembly().to_scipy().T
 
-        Mz_ = BilinearForm((self.int_space0, self.int_space1))
-        Mz_.add_integrator(CouplingMassIntegrator())
-        Mz = Mz_.assembly()
+        form11 = BilinearForm((self.int_space0, self.int_space1))
+        form11.add_integrator(CouplingMassIntegrator())
+        Mz_ = form11.assembly().to_scipy().T
 
         self.uspace1d = functionspace(self.imesh, ('Lagrange', 2), shape=(1, -1))
         self.pspace1d = functionspace(self.imesh, ('Lagrange', 1))
 
-        Bz = BilinearForm((self.pspace1d, self.uspace1d))
-        self.BPz = PressWorkIntegrator()
-        self.BPz.coef = -1.0
-        Bz.add_integrator(self.BPz)
+        form12 = BilinearForm((self.pspace1d, self.uspace1d))
+        form12.add_integrator(PressWorkIntegrator(coef=-1.0))
+        Bz = form12.assembly().to_scipy().T
+
+        form13 = BilinearForm((self.tri_space0, self.tri_space1))
+        form13.add_integrator(CouplingMassIntegrator())
+        Mx_ = form13.assembly().to_scipy().T
         
-        Mx_ = BilinearForm((self.tri_space0, self.tri_space1))
-        Mx_.add_integrator(CouplingMassIntegrator())
         self.ugdof = Ax.shape[0]*Mz.shape[0]
         print(f'自由度个数: {Ax.shape[0]*Mz.shape[0]*3+Bx.shape[1]*Mz_.shape[1]}')
-        stokes_operator = StokesOperator(Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_)
+        op = StokesOperator(Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_)
        
         # A1 = sp.kron(Ax.assembly().to_scipy(), Mz.assembly().to_scipy()) + \
         #      sp.kron(Mx.assembly().to_scipy(), Az.assembly().to_scipy())
@@ -495,11 +456,11 @@ class WPRLFEMModel(ComputationalModel):
         #     spshape=A.shape
         # )
         A = None
-        self.n_A = stokes_operator.n_A
-        self.n_p = stokes_operator.n_p
+        self.n_A = op.n_A
+        self.n_p = op.n_p
         self.x0 = bm.zeros((self.n_A,), dtype=bm.float64)
         F = bm.zeros((self.n_A,), dtype=bm.float64)
-        return stokes_operator, A, F
+        return op, A, F
     
     def boundary_dof_index(self):
         isDDof0 = self.tmesh.boundary_node_flag()
@@ -528,7 +489,7 @@ class WPRLFEMModel(ComputationalModel):
         
         return (p0, p1)
 
-    def apply_bc(self, stokes_operator: StokesOperator, F):
+    def apply_bc(self, op: StokesOperator, F):
         uh = self.x0
         gd = (self.velocity_dirichlet, self.pressure_dirichlet)
         threshold = (self.is_velocity_boundary, self.is_pressure_boundary)
@@ -558,10 +519,37 @@ class WPRLFEMModel(ComputationalModel):
             uh = bm.set_at(uh, (..., isBdDof), val)
 
         BdDof = bm.concat([BdDof[1], BdDof[0]], axis=0)
-        F = F - stokes_operator @ uh # 5000w ~ 400MB
+        F = F - op @ uh # 5000w ~ 400MB
         F = bm.set_at(F, BdDof, uh[BdDof])
 
-        return BdDof, F
+        # Fixdof
+        flag = self.imesh.boundary_face_flag()
+        igdof = self.int_space1.number_of_global_dofs()
+        isDDof = bm.zeros((igdof, ), dtype=bm.bool)
+        bm.set_at(isDDof, bm.arange(len(flag)), flag)
+        
+        inflag_uz = ~isDDof
+        inflag_u = indofP2(self.tmesh, threshold=self.is_velocity_boundary, tensor_mesh=True)
+        inflag_p = indofP1(self.tmesh, threshold=self.is_pressure_boundary, tensor_mesh=True)
+        inflag_u = bm.to_numpy(inflag_u)
+        Biginflag_u = bm.to_numpy(bm.concat([inflag_u, inflag_u], axis=0))
+        inflag_uz = bm.to_numpy(inflag_uz)
+
+        op.Ax = op.Ax[inflag_u][:,inflag_u]
+        op.Mx = op.Mx[inflag_u][:,inflag_u]
+        op.Az = op.Az[inflag_uz][:,inflag_uz]
+        op.Mz = op.Mz[inflag_uz][:,inflag_uz]
+
+        if inflag_p is not None:
+            inflag_p = bm.to_numpy(inflag_p)
+            op.Bx = op.Bx[inflag_p][:,Biginflag_u]
+            op.Mx_ = op.Mx_[inflag_p][:,inflag_u]
+            op.Mz_ = op.Mz_[:,inflag_uz]
+            op.Bz = op.Bz[:,inflag_uz]
+        
+        op.set_up()
+
+        return op, F, BdDof
 
     def from_scipy(self, M):
         row = bm.from_numpy(M.row)
@@ -575,15 +563,6 @@ class WPRLFEMModel(ComputationalModel):
     def setup(self, op: StokesOperator):
         """Compute restriction and interpolation operators.
         """
-        flag = self.imesh.boundary_face_flag()
-        igdof = self.int_space1.number_of_global_dofs()
-        isDDof = bm.zeros((igdof, ), dtype=bm.bool)
-        bm.set_at(isDDof, bm.arange(len(flag)), flag)
-        op.inflag_pz = ~flag
-        op.inflag_uz = ~isDDof
-        op.inflag_u = indofP2(self.tmesh, threshold=self.is_velocity_boundary)
-        op.inflag_p = indofP1(self.tmesh, threshold=self.is_pressure_boundary)
-        op.set_up()
         Ax = op.Ax
         Mx = op.Mx
         Az = op.Az
@@ -813,7 +792,7 @@ class WPRLFEMModel(ComputationalModel):
     @solve.register('mg')
     def solve(self, stokes_operator: StokesOperator, F):
         # initial set up
-        
+        import ipdb;ipdb.set_trace()
         self.setup(stokes_operator)
         self.logger.info(f'Step 4. setup 完成\n')
         bigF = F
@@ -875,9 +854,9 @@ class WPRLFEMModel(ComputationalModel):
         raise NotImplementedError("AMG solver not yet implemented.")
 
     def run(self):
-        stokes_operator, A, F = self.linear_system()
+        op, A, F = self.linear_system()
         self.logger.info(f'Step 1. 完成初步线性系统组装\n')
-        BdDof, F1 = self.apply_bc(stokes_operator, bm.copy(F))
+        op, F1, BdDof = self.apply_bc(op, bm.copy(F))
         
         self.logger.info(f'Step 2. 完成边界自由度处理\n')
         import gc
@@ -904,10 +883,11 @@ class WPRLFEMModel(ComputationalModel):
             next(tmr)
             
         elif self.solver == 'mg':
+            
             bd_flag = bm.zeros((len(F),), dtype=bm.bool)
             bm.set_at(bd_flag, BdDof, True)
             self.logger.info(f'Step 3. 开始多重网格setup阶段\n')
-            x_in = self.solve['mg'](stokes_operator, F1[~bd_flag])
+            x_in = self.solve['mg'](op, F1[~bd_flag])
             x = bm.set_at(F1, ~bd_flag, x_in)
         
         uh = x[:3*self.ugdof]

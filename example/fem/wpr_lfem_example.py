@@ -42,7 +42,7 @@ parser.add_argument('--return_mesh',
     help = "Whether to display the generated mesh.")
 
 parser.add_argument('--show_figure',
-    default = True, type = bool,
+    default = False, type = bool,
     help = "Whether to display the generated mesh.")
 
 parser.add_argument('--lc',
