@@ -120,8 +120,6 @@ class StokesOperator(LinearOperator):
                 self.Mx_ = self.Mx_[:,inflag_u]
                 self.Mz_ = self.Mz_[:,inflag_uz]
                 self.Bz = self.Bz[:,inflag_uz]
-                # self.Mz_ = self.Mz_[:,inflag_uz]
-                # self.Bz = self.Bz[:,inflag_uz]
 
         self.n_Ax = self.Ax.shape[0]
         self.n_Mz = self.Mz.shape[0]
@@ -437,17 +435,21 @@ class WPRLFEMModel(ComputationalModel):
         self.tri_space0 = LagrangeFESpace(self.tmesh, p=1)
         self.tri_space1 = LagrangeFESpace(self.tmesh, p=2)
 
-        Ax = BilinearForm(self.tri_space1)
-        Ax.add_integrator(ScalarDiffusionIntegrator())
+        form00 = BilinearForm(self.tri_space1)
+        form00.add_integrator(ScalarDiffusionIntegrator())
+        Ax = form00.assembly()
 
-        Mx = BilinearForm(self.tri_space1)
-        Mx.add_integrator(ScalarMassIntegrator())
+        form01 = BilinearForm(self.tri_space1)
+        form01.add_integrator(ScalarMassIntegrator())
+        Mx = form01.assembly()
 
-        Az = BilinearForm(self.int_space1)
-        Az.add_integrator(ScalarDiffusionIntegrator())
+        form02 = BilinearForm(self.int_space1)
+        form02.add_integrator(ScalarDiffusionIntegrator())
+        Az = form02.assembly()
 
-        Mz = BilinearForm(self.int_space1)
-        Mz.add_integrator(ScalarMassIntegrator())
+        form03 = BilinearForm(self.int_space1)
+        form03.add_integrator(ScalarMassIntegrator())
+        Mz = form03.assembly()
 
         self.uspace2d = functionspace(self.tmesh, ('Lagrange', 2), shape=(2, -1))
         self.pspace2d = functionspace(self.tmesh, ('Lagrange', 1))
@@ -456,10 +458,12 @@ class WPRLFEMModel(ComputationalModel):
         self.BPx = PressWorkIntegrator()
         self.BPx.coef = -1.0
         Bx.add_integrator(self.BPx)
+        Bx = Bx.assembly()
 
         Mz_ = BilinearForm((self.int_space0, self.int_space1))
         Mz_.add_integrator(CouplingMassIntegrator())
- 
+        Mz = Mz_.assembly()
+
         self.uspace1d = functionspace(self.imesh, ('Lagrange', 2), shape=(1, -1))
         self.pspace1d = functionspace(self.imesh, ('Lagrange', 1))
 
@@ -875,7 +879,6 @@ class WPRLFEMModel(ComputationalModel):
         self.logger.info(f'Step 1. 完成初步线性系统组装\n')
         BdDof, F1 = self.apply_bc(stokes_operator, bm.copy(F))
         
-        # summary.print_(summary.summarize(muppy.get_objects()))
         self.logger.info(f'Step 2. 完成边界自由度处理\n')
         import gc
         gc.collect()
