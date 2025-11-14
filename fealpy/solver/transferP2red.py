@@ -29,7 +29,9 @@ def indofP2(mesh: TriangleMesh, threshold=None, return_index=False, tensor_mesh=
         return ~bd_flag, index_dof
     return ~bd_flag
 
-def transferP2red(mesh: TriangleMesh, level:int, threshold:Optional[Tuple[CoefLike,...]]=None):
+def transferP2red(mesh: TriangleMesh, level:int, 
+                  threshold:Optional[Tuple[CoefLike,...]]=None,
+                  tensor_mesh=False):
     # input: the coaresest grid
     if threshold == 'None':
             return mesh.uniform_refine(n=level-1, returnim=True)
@@ -114,13 +116,14 @@ def transferP2red(mesh: TriangleMesh, level:int, threshold:Optional[Tuple[CoefLi
         Ndofc = mesh.number_of_global_ipoints(p=2)
 
         if threshold is not None:
-            flag0 = indofP2(mesh, threshold)
+            flag0 = indofP2(mesh, threshold, tensor_mesh=tensor_mesh)
         mesh.uniform_refine()
         if threshold is not None:
-            flag1 = indofP2(mesh, threshold)
+            flag1 = indofP2(mesh, threshold, tensor_mesh=tensor_mesh)
         c2i1 = mesh.cell_to_ipoint(p=2)
         Ndoff = mesh.number_of_global_ipoints(p=2)
         P = P2red(NTc, c2i0, c2i1, Ndofc, Ndoff)
+
         if threshold != None:
             P = P.to_scipy()[bm.to_numpy(flag1)][:,bm.to_numpy(flag0)]
         Pro_u.append(P)

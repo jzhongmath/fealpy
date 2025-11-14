@@ -35,7 +35,7 @@ import time
     平滑过程:
     (1) A: 临时数组, 通过Ai的assembly获取.
     (2) BB^T, tril(BB^T), triu(BB^T), BAB^T: 储存每层三维矩阵.
-
+    (3) Bt: Operator
 """
 
 class SumOperator:
@@ -150,23 +150,57 @@ class StokesOperator(LinearOperator):
         return y
 
 
-class AiOperator(LinearOperator):
-    def __init__(self):
-        pass
+class Ai0Operator(LinearOperator):
+    def __init__(self, Ax, Mx, Mz, Az):
+        self.Ax = Ax
+        self.Mx = Mx
+        self.Mz = Mz
+        self.Az = Az
+
+        self.m0, self.n0 = Ax.shape
+        self.m1, self.n1 = Mz.shape
+        self.shape = (self.m0*self.m1, self.n0*self.n1)
 
     def set_up(self):
         pass
 
     def assembly(self):
-        pass
+        A0_dense = sp.kron(self.Ax, self.Mz) + sp.kron(self.Mx, self.Az)
 
+        return A0_dense
+    
     def __matmul__(self, x):
-        pass
+        X = bm.reshape(x, (self.n0, self.m1))
+        Y = self.Ax @ X @ self.Mz + self.Mx @ X @ self.Az
+        Y = Y.ravel()
+        return Y
 
 
 class BiOperator(LinearOperator):
-    def __init__(self):
-        pass
+    def __init__(self, Bx, Mx_, Mz_, Bz):
+        self.Bx = Bx
+        self.Mx_ = Mx_
+        self.Mz_ = Mz_
+        self.Bz = Bz
+        self.Mz_t = Mz_.T
+        self.Bzt = Bz.T
+
+        self.n_Bx = self.Bx.shape[0]
+        self.m_Bx = self.Bx.shape[1]
+
+        self.n_Mz_ = self.Mz_.shape[0]
+        self.m_Mz_ = self.Mz_.shape[1]
+
+        self.n_Mx_ = self.Mx_.shape[0]
+        self.m_Mx_ = self.Mx_.shape[1]
+
+        self.n_Bz = self.Bz.shape[0]
+        self.m_Bz = self.Bz.shape[1]
+
+        self.m0, self.n0 = Mx_.shape
+        self.m1, self.n1 = Bz.shape
+        self.n_u0 = self.n0*self.n1
+        self.shape = (self.m0*self.m1, 3*self.n0*self.n1)
 
     def set_up(self):
         pass
@@ -175,7 +209,39 @@ class BiOperator(LinearOperator):
         pass
 
     def __matmul__(self, x):
+        U1 = bm.reshape(x[:2*self.n_u0], (self.m_Bx, self.m_Mz_))
+        U2 = bm.reshape(x[2*self.n_u0:], (self.m_Mx_, self.m_Bz))
+
+        BU1 = self.Bx @ U1 @ self.Mz_t
+        BU2 = self.Mx_ @ U2 @ self.Bzt
+        y = BU1.ravel() + BU2.ravel()
+        return y
+
+
+class BtiOperator(LinearOperator):
+    def __init__(self, Bxt, Mx_t, Mz_, Bz):
+        self.Bxt = Bxt
+        self.Mx_t = Mx_t
+        self.Mz_ = Mz_
+        self.Bz = Bz
+
+        self.n0, self.m0 = Mx_t.shape
+        self.m1, self.n1 = Bz.shape
+        self.shape = (3*self.n0*self.n1, self.m0*self.m1)
+
+    def set_up(self):
         pass
+
+    def assembly(self):
+        pass
+
+    def __matmul__(self, x):
+        P = bm.reshape(x, (self.m0, self.m1))
+        BP1 = self.Bxt @ P @ self.Mz_
+        BP2 = self.Mx_t @ P @ self.Bz
+
+        y = bm.concat([BP1.ravel(), BP2.ravel()], axis=0)
+        return y
 
 
 class WPRLFEMModel(ComputationalModel):
@@ -592,7 +658,7 @@ class WPRLFEMModel(ComputationalModel):
         
         # Compute Pro and Res of u and p.
         Pro_p = transferP1red(self.mesh0, self.level, self.is_pressure_boundary)
-        Pro_u = transferP2red(self.mesh1, self.level, self.is_velocity_boundary)
+        Pro_u = transferP2red(self.mesh1, self.level, self.is_velocity_boundary, tensor_mesh=True)
         
         for j in range(level - 1, 0, -1):
             Axi[j-1] = Pro_u[j-1].T @ Axi[j] @ Pro_u[j-1]
@@ -606,59 +672,64 @@ class WPRLFEMModel(ComputationalModel):
         R_p = [None] * (level-1)
 
         auxMat = [None] * level
-        Ai = [None] * level
+        A0i = [None] * level
         Bi = [None] * level
         bigAi = [None] * level
 
-        Iz2 = spdiags(bm.ones((op.n_Mz,)), 0, op.n_Mz, op.n_Mz)
-        Iz1 = spdiags(bm.ones((op.n_Mz_,)), 0, op.n_Mz_, op.n_Mz_)
+        Iz2 = spdiags(bm.ones((op.n_Mz,)), 0, op.n_Mz, op.n_Mz).to_scipy()
+        Iz1 = spdiags(bm.ones((op.n_Mz_,)), 0, op.n_Mz_, op.n_Mz_).to_scipy()
 
         for j in range(self.level):
-            A0 = sp.kron(Axi[j], Mz) + sp.kron(Mxi[j], Az)
-            Ai[j] = sp.block_diag([A0, A0, A0])
-            Bi[j] = sp.bmat([[sp.kron(Bxi[j], Mz_), sp.kron(Mx_i[j], Bz)]])
-            Nu[j] = A0.shape[0]
+            A0i[j] = Ai0Operator(Axi[j], Mxi[j], Mz, Az)
+            Bi[j] = BiOperator(Bxi[j], Mx_i[j], Mz_, Bz)
+            Nu[j] = A0i[j].shape[0]
             Np[j] = Bi[j].shape[0]
             # bigAi[j] = (sp.bmat([[Ai[j], Bi[j].T],[Bi[j], None]]).tocsr())
             if j < self.level - 1:
-                P0 = sp.kron(Pro_u[j], Iz2.to_scipy())
-                P_u[j] = self.from_scipy(sp.block_diag([P0, P0, P0]))
-                P_p[j] = self.from_scipy(sp.kron(Pro_p[j], Iz1.to_scipy()))
+                P_u[j] = KronOperator(Pro_u[j], Iz2)
+                P_p[j] = KronOperator(Pro_p[j], Iz1)
             
             if j > 0:
-                Bt = Bi[j].T
-                BBt = Bi[j] @ Bt
-                BABt = Bi[j] @ Ai[j] @ Bt
+                Bt = BtiOperator(Bxi[j].T, Mx_i[j].T, Mz_, Bz)
+                BBt = sp.kron(Bxi[j]@Bxi[j].T, Mz_@Mz_.T) + sp.kron(Mx_i[j]@Mx_i[j].T, Bz@Bz.T)
+                BABt = sp.kron(Bxi[j]@sp.bmat([[Axi[j],None], [None,Axi[j]]])@Bxi[j].T, Mz_@Mz@Mz_.T) \
+                     + sp.kron(Bxi[j]@sp.bmat([[Mxi[j],None], [None,Mxi[j]]])@Bxi[j].T, Mz_@Az@Mz_.T) \
+                     + sp.kron(Mx_i[j]@Axi[j]@Mx_i[j].T, Bz@Mz@Bz.T) \
+                     + sp.kron(Mx_i[j]@Mxi[j]@Mx_i[j].T, Bz@Az@Bz.T)
 
-                Su = sp.tril(A0)
+                # Su = sp.tril(A0)
                 Sp = sp.tril(BBt)
                 Spt = sp.triu(BBt)
-                DSp = BBt.diagonal()
-                
-                Bt = self.from_scipy(Bt)
-                BBt = self.from_scipy(BBt.tocoo()).tocsr()
-                BABt = self.from_scipy(BABt.tocoo()).tocsr()
+                # DSp = BBt.diagonal()
+                DSp = sp.diags_array(1/BBt.diagonal())
+                invSp = Sp @ DSp
+                invSpt = Spt @ DSp
+                # Bt = self.from_scipy(Bt)
+                # BBt = self.from_scipy(BBt.tocoo()).tocsr()
+                # BABt = self.from_scipy(BABt.tocoo()).tocsr()
 
-                Spt = self.from_scipy(Spt)
-                Sp = self.from_scipy(Sp)
-                DSp = bm.tensor(DSp)
+                # Spt = self.from_scipy(Spt)
+                # Sp = self.from_scipy(Sp)
+                # DSp = bm.tensor(DSp)
 
                 auxMat[j] = {
                     'Bt': Bt,
                     'BBt': BBt,
                     'BABt': BABt,
-                    'Su': Su.tocsr(),
-                    'Spt': Spt.to_scipy().tocsr(),
-                    'Sp': Sp.to_scipy().tocsr(),
-                    'DSp': DSp
+                    # 'Su': Su.tocsr(),
+                    'Spt': Spt.tocsr(),
+                    'Sp': Sp.tocsr(),
+                    # 'DSp': DSp,
+                    'invSpt': invSpt,
+                    'invSp': invSp
                 }
-            Ai[j] = self.from_scipy(Ai[j])
-            Bi[j] = self.from_scipy(Bi[j])
-
+            # Ai[j] = self.from_scipy(Ai[j])
+            # Bi[j] = self.from_scipy(Bi[j])
+        
         self.P_u = P_u
         self.P_p = P_p
         
-        self.Ai = Ai
+        self.A0i = A0i
         self.Bi = Bi
         self.Nu = Nu
         self.Np = Np
@@ -682,6 +753,8 @@ class WPRLFEMModel(ComputationalModel):
         P_u = self.P_u[J-1]
         P_p = self.P_p[J-1] 
         
+        self.auxMat[J]['Su0'] = sp.tril(self.A0i[J].assembly())
+
         # pre-smoothing
         eu, ep = self.smoothing(bm.zeros((3*self.Nu[J],), dtype=bm.float64),
                                 bm.zeros((self.Np[J],), dtype=bm.float64),ru,rp,J)
@@ -764,11 +837,11 @@ class WPRLFEMModel(ComputationalModel):
         """
         auxMat = self.auxMat[J]
         smootherOpt = self.options
-        A = self.Ai[J]
+        A0 = self.A0i[J]
         B = self.Bi[J]
         start = time.time()
         smoother = StokesLSCDGS(auxMat,smootherOpt)
-        u, p, self.SGS_time, self.MUL_time = smoother.run(u,p,f,g,A,B,self.SGS_time,self.MUL_time)
+        u, p, self.SGS_time, self.MUL_time = smoother.run(u,p,f,g,A0,B,self.SGS_time,self.MUL_time)
         t = time.time() - start
         print(t)
         self.smoothing_time += t
@@ -776,29 +849,28 @@ class WPRLFEMModel(ComputationalModel):
         return u, p    
     
     @variantmethod('direct')
-    def solve(self, stokes_operator: StokesOperator, F, solver='mumps'):
+    def solve(self, op: StokesOperator, F, solver='mumps'):
         """
         Solve the linear system using direct method.
         """
         # from scipy.sparse.linalg import bicgstab, minres, gmres, cg, LinearOperator
         from fealpy.solver import bicgstab, minres, gmres, cg
-        # linop = LinearOperator(shape=stokes_operator.shape,matvec=stokes_operator)
-        # x, info = bicgstab(stokes_operator, F)
-        x, info = minres(stokes_operator, F, atol=1e-8, rtol=1e-8)
-        # x, info = cg(stokes_operator, F, returninfo=True)
+        # linop = LinearOperator(shape=op.shape,matvec=op)
+        # x, info = bicgstab(op, F)
+        x, info = minres(op, F, atol=1e-8, rtol=1e-8)
+        # x, info = cg(op, F, returninfo=True)
         print(info)
         return x
 
     @solve.register('mg')
-    def solve(self, stokes_operator: StokesOperator, F):
+    def solve(self, op: StokesOperator, F):
         # initial set up
-        import ipdb;ipdb.set_trace()
-        self.setup(stokes_operator)
+        self.setup(op)
         self.logger.info(f'Step 4. setup 完成\n')
         bigF = F
         bigu = bm.zeros_like(F)
  
-        bigr = bigF - stokes_operator @ bigu
+        bigr = bigF - op @ bigu
 
         k = 0
         nb = bm.linalg.norm(bigF)
@@ -808,12 +880,16 @@ class WPRLFEMModel(ComputationalModel):
         start = time.time()
         while (bm.max(err[k]) > self.tol) & (k <= self.maxIt):
             k = k + 1
+            pdof = self.Np[-1]
             if self.cycle_type == 'VCYCLE':
-                bigerru = self.vcycle(bigr)
+                eu, ep = self.vcycle(bigr[:-pdof], bigr[-pdof:])
+                # bigerru = self.vcycle(bigr)
             elif self.cycle_type == 'WCYCLE':
-                bigerru = self.wcycle(bigr)
+                eu, ep = self.wcycle(bigr[:-pdof], bigr[-pdof:])
+                # bigerru = self.wcycle(bigr)
+            bigerru = bm.concat([eu, ep])
             bigu = bigu + bigerru
-            bigr = bigr - stokes_operator @ bigerru
+            bigr = bigr - op @ bigerru
 
             # compute the relative error
             err[k] = bm.linalg.norm(bigr) / nb
@@ -878,7 +954,7 @@ class WPRLFEMModel(ComputationalModel):
             tmr = timer()
             next(tmr)
             x = spsolve(A.to_scipy(), F2)
-            # x = self.solve['direct'](stokes_operator, F1)
+            # x = self.solve['direct'](op, F1)
             tmr.send(f'求解器时间')
             next(tmr)
             

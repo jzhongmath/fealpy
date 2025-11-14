@@ -33,11 +33,11 @@ class StokesLSCDGS():
                 'printlevel': 0,
                 'setupflag': 0
             }
-
+        
         self.Bt = auxMat.get('Bt')
         # self.BBt = auxMat.get('BBt')
         self.BABt = auxMat.get('BABt')
-        self.Su = auxMat.get('Su')
+        # self.Su = auxMat.get('Su')
         self.Su0 = auxMat.get('Su0')
         self.Sp = auxMat.get('Sp')
         self.Spt = auxMat.get('Spt')
@@ -48,11 +48,12 @@ class StokesLSCDGS():
 
         self.n = 0
 
-    def run(self, u,p,f,g,A,B,SGS_time,MUL_time):
+    def run(self, u,p,f,g,A0,B,SGS_time,MUL_time):
         for _ in range(self.smoothingstep):
             # Step 1: relax Momentum eqns
             start = time.time()
-            r = (f - self.Bt @ p - A @ u)
+            import ipdb;ipdb.set_trace()
+            r = (f - self.Bt @ p - (A0 @ u.reshape(-1,3,order='F')).reshape(-1,order='F'))
             MUL_time += time.time() - start
             start = time.time()
 
@@ -94,7 +95,6 @@ class StokesLSCDGS():
             if self.smoothingbarSp == 'SGS':
                 b1 = spsolve_triangular(self.invSpt, dq, lower=False)
                 dp = spsolve_triangular(self.Sp, b1)
-                # dp = self.Sp / (self.DSp @ (self.Spt / dq))
             elif self.smoothingbarSp == 'GS':
                 # dp = spsolve_triangular(self.Spt, dq, lower=False)
                 dp = tfqmr(self.Spt, dq, maxiter=3)[0]
