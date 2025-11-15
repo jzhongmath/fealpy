@@ -677,15 +677,6 @@ class WPRLFEMModel(ComputationalModel):
 
         return op, F, BdDof
 
-    def from_scipy(self, M):
-        row = bm.from_numpy(M.row)
-        col = bm.from_numpy(M.col)
-        data = bm.from_numpy(M.data)
-        M = COOTensor(indices=bm.stack([row, col], axis=0),
-                        values=data, spshape=M.shape)
-        
-        return M
-
     def setup(self, op: StokesOperator):
         """Compute restriction and interpolation operators.
         """
@@ -805,7 +796,6 @@ class WPRLFEMModel(ComputationalModel):
         self.auxMat = auxMat
         self.bigAi = (sp.bmat([[Ai[0].assembly(), Bti[0].assembly()],[Bi[0].assembly(), None]]).tocsr())
             
-
     def vcycle(self, ru, rp, J=None):
         if J is None:
             J = self.level - 1
