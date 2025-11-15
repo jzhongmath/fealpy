@@ -80,9 +80,9 @@ class KronOperator(LinearOperator):
             U2 = bm.reshape(v[self.n:2*self.n], (self.n0, self.m1))
             U3 = bm.reshape(v[2*self.n:3*self.n], (self.n0, self.m1))
 
-            Y1 = A @ U1 @ B + A @ U1 @ B
-            Y2 = A @ U2 @ B + A @ U2 @ B
-            Y3 = A @ U3 @ B + A @ U3 @ B
+            Y1 = A @ U1 @ B
+            Y2 = A @ U2 @ B
+            Y3 = A @ U3 @ B
             Y = bm.concat([Y1.ravel(), Y2.ravel(), Y3.ravel()], axis=0)
             return Y
         elif self.num == 1:
@@ -186,7 +186,8 @@ class A0iOperator(LinearOperator):
         return A0_dense
     
     def __matmul__(self, x):
-        X = bm.reshape(x, (self.n0, self.m1))
+        v = bm.copy(x)
+        X = bm.reshape(v, (self.n0, self.m1))
         Y = self.Ax @ X @ self.Mz + self.Mx @ X @ self.Az
         Y = Y.ravel()
         return Y
@@ -261,8 +262,9 @@ class BiOperator(LinearOperator):
         return B
 
     def __matmul__(self, x):
-        U1 = bm.reshape(x[:2*self.n_u0], (self.m_Bx, self.m_Mz_))
-        U2 = bm.reshape(x[2*self.n_u0:], (self.m_Mx_, self.m_Bz))
+        v = bm.copy(x)
+        U1 = bm.reshape(v[:2*self.n_u0], (self.m_Bx, self.m_Mz_))
+        U2 = bm.reshape(v[2*self.n_u0:], (self.m_Mx_, self.m_Bz))
 
         BU1 = self.Bx @ U1 @ self.Mz_t
         BU2 = self.Mx_ @ U2 @ self.Bzt
@@ -293,7 +295,8 @@ class BtiOperator(LinearOperator):
         return B
 
     def __matmul__(self, x):
-        P = bm.reshape(x, (self.m0, self.m1))
+        v = bm.copy(x)
+        P = bm.reshape(v, (self.m0, self.m1))
         BP1 = self.Bxt @ P @ self.Mz_
         BP2 = self.Mx_t @ P @ self.Bz
 
@@ -754,11 +757,11 @@ class WPRLFEMModel(ComputationalModel):
             
             if j > 0:
                 BBt = sp.kron(Bxi[j]@Bxi[j].T, Mz_@Mz_.T) + sp.kron(Mx_i[j]@Mx_i[j].T, Bz@Bz.T)
-                BABt = sp.kron(Bxi[j]@sp.bmat([[Axi[j],None], [None,Axi[j]]])@Bxi[j].T, Mz_@Mz@Mz_.T) \
-                     + sp.kron(Bxi[j]@sp.bmat([[Mxi[j],None], [None,Mxi[j]]])@Bxi[j].T, Mz_@Az@Mz_.T) \
+                BABt = sp.kron(Bxi[j]@sp.block_diag((Axi[j], Axi[j]))@Bxi[j].T, Mz_@Mz@Mz_.T) \
+                     + sp.kron(Bxi[j]@sp.block_diag((Mxi[j], Mxi[j]))@Bxi[j].T, Mz_@Az@Mz_.T) \
                      + sp.kron(Mx_i[j]@Axi[j]@Mx_i[j].T, Bz@Mz@Bz.T) \
                      + sp.kron(Mx_i[j]@Mxi[j]@Mx_i[j].T, Bz@Az@Bz.T)
-
+                
                 # Su = sp.tril(A0)
                 Sp = sp.tril(BBt)
                 Spt = sp.triu(BBt)
