@@ -22,9 +22,9 @@ class StokesLSCDGS():
     
     def set_up(self, auxMat, smootherOpt):
         self.smoothingstep = smootherOpt.get('smoothingstep', 2)
-        self.smoothingSp = smootherOpt.get('smoothingSp', 'GS')
-        self.smoothingbarSp = smootherOpt.get('smoothingbarSp', 'GS')
-        self.smoothingbarSpPara = smootherOpt.get('smoothingbarSpPara', 1)
+        self.smoothingSp = smootherOpt.get('smoothingSp', 'SGS')
+        self.smoothingbarSp = smootherOpt.get('smoothingbarSp', 'SGS')
+        self.smoothingbarSpPara = smootherOpt.get('smoothingbarSpPara', 15)
         if (self.smoothingbarSp == 'VCYCLE') or (self.smoothingSp == 'VCYCLE'):
             self.optionmg = {
                 'solvermaxit': 1,
@@ -48,24 +48,24 @@ class StokesLSCDGS():
 
         self.n = 0
 
-    def run(self, u,p,f,g,A0,B,SGS_time,MUL_time):
+    def run(self, u,p,f,g,A,B,SGS_time,MUL_time):
         for _ in range(self.smoothingstep):
             # Step 1: relax Momentum eqns
             start = time.time()
-            import ipdb;ipdb.set_trace()
-            r = (f - self.Bt @ p - (A0 @ u.reshape(-1,3,order='F')).reshape(-1,order='F'))
+            r = (f - self.Bt @ p - A @ u)
             MUL_time += time.time() - start
             start = time.time()
 
             # import ipdb;ipdb.set_trace()
             # u = u + spsolve_triangular(self.Su, r)
-            n = len(r) // 2
+            n = len(r) // 3
             # u += tfqmr(self.Su, r, maxiter=3)[0]
             # u[n:] = u[n:] + tfqmr(self.Su, r[n:], maxiter=3)[0]
             
-            du = spsolve_triangular(self.Su0, r.reshape(-1,2,order='F'))
+            du = spsolve_triangular(self.Su0, r.reshape(-1,3,order='F'))
             u[:n] += du[:,0]
-            u[n:] += du[:,1]
+            u[n:2*n] += du[:,1]
+            u[2*n:] += du[:,2]
             SGS_time += time.time() - start
             # Step 2: relax transformed Continuity eqns
             start = time.time()
