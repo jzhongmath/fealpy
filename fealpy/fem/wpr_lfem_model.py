@@ -66,19 +66,20 @@ class KronOperator(LinearOperator):
         self.A = A
         self.B = B
         self.num = num
-        self.m0, self.n0 = A.shape
-        self.m1, self.n1 = B.shape
-        self.n = self.n0 * self.m1
-        self.shape = (num*self.m0*self.m1, num*self.n0*self.n1)
+        self.n0, self.m0 = A.shape
+        self.n1, self.m1 = B.shape
+        self.n = self.m0 * self.m1
+        self.shape = (num*self.n0*self.n1, num*self.m0*self.m1)
 
     def __matmul__(self, x):
         v = bm.copy(x)
         A = self.A
         B = self.B
+
         if self.num == 3:
-            U1 = bm.reshape(v[:self.n], (self.n0, self.m1))
-            U2 = bm.reshape(v[self.n:2*self.n], (self.n0, self.m1))
-            U3 = bm.reshape(v[2*self.n:3*self.n], (self.n0, self.m1))
+            U1 = bm.reshape(v[:self.n], (self.m0, self.m1))
+            U2 = bm.reshape(v[self.n:2*self.n], (self.m0, self.m1))
+            U3 = bm.reshape(v[2*self.n:3*self.n], (self.m0, self.m1))
 
             Y1 = A @ U1 @ B
             Y2 = A @ U2 @ B
@@ -86,7 +87,7 @@ class KronOperator(LinearOperator):
             Y = bm.concat([Y1.ravel(), Y2.ravel(), Y3.ravel()], axis=0)
             return Y
         elif self.num == 1:
-            X = bm.reshape(x, (self.n0, self.m1))
+            X = bm.reshape(v, (self.m0, self.m1))
             Y = A @ X @ B
             Y = Y.ravel()
         return Y
@@ -562,6 +563,7 @@ class WPRLFEMModel(ComputationalModel):
         Mx_ = form13.assembly().to_scipy().T
         
         self.ugdof = Ax.shape[0]*Mz.shape[0]
+        self.total_dof = Ax.shape[0]*Mz.shape[0]*3+Bx.shape[1]*Mz_.shape[1]
         print(f'自由度个数: {Ax.shape[0]*Mz.shape[0]*3+Bx.shape[1]*Mz_.shape[1]}')
         op = StokesOperator(Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_)
        
@@ -704,8 +706,6 @@ class WPRLFEMModel(ComputationalModel):
         # bigAi[-1] = sp.bmat([[A, B.T],[B,None]]).tocsr()
         Nu = bm.zeros((level,), dtype=bm.int32)
         Np = bm.zeros((level,), dtype=bm.int32)
-        Nu[-1] = op.n_Ax
-        Np[-1] = op.n_Bx
         
         # Compute Pro and Res of u and p.
         Pro_p = transferP1red(self.mesh0, self.level, self.is_pressure_boundary)
@@ -966,7 +966,7 @@ class WPRLFEMModel(ComputationalModel):
         print(f"iter: {itStep:2.0f},  "
             f"err = {max(err[-1]):8.4e},  "
             f"level = {self.level},   "
-            f"total dof: {self.bigAi[-1].shape[0]:2.0f}"
+            f"total dof: {self.total_dof:2.0f},   "
             f"coarse dof: {self.bigAi.shape[0]:2.0f}\n\n"
             f"total time in coarsest grid: {self.coarse_time}\n"
             f"total time in SGS: {self.SGS_time}\n"

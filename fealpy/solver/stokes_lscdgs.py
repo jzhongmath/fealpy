@@ -24,7 +24,7 @@ class StokesLSCDGS():
         self.smoothingstep = smootherOpt.get('smoothingstep', 2)
         self.smoothingSp = smootherOpt.get('smoothingSp', 'SGS')
         self.smoothingbarSp = smootherOpt.get('smoothingbarSp', 'SGS')
-        self.smoothingbarSpPara = smootherOpt.get('smoothingbarSpPara', 15)
+        self.smoothingbarSpPara = smootherOpt.get('smoothingbarSpPara', 1.6)
         if (self.smoothingbarSp == 'VCYCLE') or (self.smoothingSp == 'VCYCLE'):
             self.optionmg = {
                 'solvermaxit': 1,

@@ -11,7 +11,7 @@ parser.add_argument('--backend',
         help="默认后端为 numpy. 还可以选择 pytorch, jax, tensorflow 等")
 
 parser.add_argument('--thickness',
-    default = 0.1, type = float,
+    default = 0.4, type = float,
     help = "thickness.")
 
 
@@ -79,14 +79,14 @@ import gmsh
 options = vars(parser.parse_args())
 
 # bm.set_backend('pytorch')
-bm.set_backend('numpy'); options['lc'] = 1
+bm.set_backend('numpy'); options['lc'] = 0.5
 # bm.set_default_device('cuda')
 
 mesher = WPRMesher(options)
 mesher.generate()
 
 level = options['level']
-imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=8)
+imesh = IntervalMesh.from_interval_domain([0, 0.4], nx=8)
 
 model = WPRLFEMModel(options=options)
 model.set_init_mesher(mesher, imesh)
