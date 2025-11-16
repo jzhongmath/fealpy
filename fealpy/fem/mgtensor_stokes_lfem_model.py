@@ -325,6 +325,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         if options is None:
             options = {} 
         
+        self.eps = 1e-10
         self.thickness = options.get('thickness', 0.1)
         self.level = options.get('level')
 
@@ -645,7 +646,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
                           bm.tile(ipoint1.T, (ipoint3.shape[0],)).T], axis=1)
         
         return (p0, p1)
-    
+
     def apply_bc(self, op: StokesOperator, F):
         uh = self.x0
         gd = (self.velocity_dirichlet, self.pressure_dirichlet)
@@ -667,6 +668,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             if i == 1:
                 index_dof = bm.concat([index_dof, index_dof + len(points[1]), 
                                     index_dof + 2*len(points[1])], axis=0)
+                # import ipdb;ipdb.set_trace()
                 val = val.T.reshape(-1)
 
             BdDof.append(index_dof)
@@ -740,7 +742,6 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         Pro_u = transferP2red(self.mesh1, self.level, self.is_velocity_boundary, tensor_mesh=True)
         
         for j in range(level - 1, 0, -1):
-            import ipdb;ipdb.set_trace()
             Axi[j-1] = Pro_u[j-1].T @ Axi[j] @ Pro_u[j-1]
             Mxi[j-1] = Pro_u[j-1].T @ Mxi[j] @ Pro_u[j-1]
             Bxi[j-1] = Pro_p[j-1].T @ Bxi[j] @ sp.block_diag([Pro_u[j-1],Pro_u[j-1]])
