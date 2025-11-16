@@ -62,10 +62,11 @@ class StokesLSCDGS():
             # u += tfqmr(self.Su, r, maxiter=3)[0]
             # u[n:] = u[n:] + tfqmr(self.Su, r[n:], maxiter=3)[0]
             
-            du = spsolve_triangular(self.Su0, r.reshape(-1,3,order='F'))
-            u[:n] += du[:,0]
-            u[n:2*n] += du[:,1]
-            u[2*n:] += du[:,2]
+            du = spsolve_triangular(self.Su0, r.reshape(-1,3,order='F')).reshape(-1,order='F')
+            u += du
+            # u[:n] += du[:,0]
+            # u[n:2*n] += du[:,1]
+            # u[2*n:] += du[:,2]
             SGS_time += time.time() - start
             # Step 2: relax transformed Continuity eqns
             start = time.time()
@@ -79,11 +80,11 @@ class StokesLSCDGS():
 
             elif self.smoothingSp == 'GS':
                 # dq = bicgstab(self.Sp, rp, rtol=1e-4)[0]
-                dq = tfqmr(self.Sp, rp, rtol=1e-1)[0]
-                # dq = spsolve_triangular(self.Sp, rp)
+                # dq = tfqmr(self.Sp, rp, rtol=1e-1)[0]
+                dq = spsolve_triangular(self.Sp, rp)
             elif self.smoothingSp == 'VCYCLE':
                 pass
-            SGS_time += time.time() - start
+            # SGS_time += time.time() - start
             
             # Step 3: transform the correction back to the original variables
             start = time.time()
@@ -96,11 +97,11 @@ class StokesLSCDGS():
                 b1 = spsolve_triangular(self.invSpt, dq, lower=False)
                 dp = spsolve_triangular(self.Sp, b1)
             elif self.smoothingbarSp == 'GS':
-                # dp = spsolve_triangular(self.Spt, dq, lower=False)
-                dp = tfqmr(self.Spt, dq, maxiter=3)[0]
+                dp = spsolve_triangular(self.Spt, dq, lower=False)
+                # dp = tfqmr(self.Spt, dq, maxiter=3)[0]
             elif self.smoothingbarSp == 'VCYCLE':
                 pass
-            SGS_time += time.time() - start
+            # SGS_time += time.time() - start
 
             p = p - self.smoothingbarSpPara*dp
         

@@ -54,7 +54,7 @@ class WPRMesher:
         inlet = option['inlet']
         gap = option['gap']
         lc = option['lc']
-
+        print(lc)
         return_mesh = option['return_mesh']
         show_figure = option['show_figure']
         
@@ -96,29 +96,30 @@ class WPRMesher:
 
         block = gmsh.model.occ.cut([(2, main_block)], [(2, sub_block0), (2, sub_block1), (2, sub_block2), (2, sub_block3)])
         gmsh.model.occ.synchronize()
-
+        
+        len = 0.2
         slit0 = gmsh.model.occ.addRectangle(
-            1.5, 1, 0,
+            1.5, 2 - len, 0,
             gap,
-            1
+            len
         )
 
         slit1 = gmsh.model.occ.addRectangle(
             2.5, 0, 0,
             gap,
-            1
+            len
         )
 
         slit2 = gmsh.model.occ.addRectangle(
-            3.5, 1, 0,
+            3.5, 2 - len, 0,
             gap,
-            1
+            len
         )
 
         slit3 = gmsh.model.occ.addRectangle(
             4.5, 0, 0,
             gap,
-            1
+            len
         )
 
         block = gmsh.model.occ.cut([(2, main_block)], 

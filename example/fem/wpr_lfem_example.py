@@ -78,15 +78,24 @@ import gmsh
 
 options = vars(parser.parse_args())
 
+
+# lc = 0.4
+# dof = 370w, 24 s
+
+# lc = 0.07
+# dof = 6700w, 856s
+
+
 # bm.set_backend('pytorch')
-bm.set_backend('numpy'); options['lc'] = 0.5
+bm.set_backend('numpy'); options['lc'] = 2
+
 # bm.set_default_device('cuda')
 
 mesher = WPRMesher(options)
 mesher.generate()
 
 level = options['level']
-imesh = IntervalMesh.from_interval_domain([0, 0.4], nx=8)
+imesh = IntervalMesh.from_interval_domain([0, 0.4], nx=3)
 
 model = WPRLFEMModel(options=options)
 model.set_init_mesher(mesher, imesh)

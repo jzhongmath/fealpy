@@ -20,6 +20,7 @@ from fealpy.utils import timer
 import scipy.sparse as sp
 import scipy.sparse.linalg as lg
 import time
+import gc
 
 """
 1. 减小矩阵规模来作用内部自由度, 相应的减少插值、限制矩阵规模
@@ -182,8 +183,13 @@ class A0iOperator(LinearOperator):
         pass
 
     def assembly(self):
-        A0_dense = sp.kron(self.Ax, self.Mz) + sp.kron(self.Mx, self.Az)
+        A0_dense = sp.kron(sp.tril(A=self.Ax, k=-1), self.Mz, format='csr') + \
+             sp.kron(sp.tril(A=self.Mx, k=-1), self.Az, format='csr') + \
+             sp.kron(sp.diags(self.Ax.diagonal()), sp.tril(A=self.Mz), format='csr') + \
+             sp.kron(sp.diags(self.Mx.diagonal()), sp.tril(A=self.Az), format='csr')
 
+        # A0_dense = A0 + A1 + A2 + A3
+        # A0_dense = sp.kron(self.Ax, self.Mz) + sp.kron(self.Mx, self.Az)
         return A0_dense
     
     def __matmul__(self, x):
@@ -344,6 +350,12 @@ class WPRLFEMModel(ComputationalModel):
         self.SGS_time = 0
         self.MUL_time = 0
 
+        self.assembly_time = 0
+        self.cycle_MUL_time = 0
+
+        self.setup_time = 0
+        self.initial_assembly_time = 0
+
     def set_init_mesher(self, mesher: WPRMesher, imesh: IntervalMesh):
         """
         Set the initial mesh for the simulation.
@@ -429,17 +441,18 @@ class WPRLFEMModel(ComputationalModel):
         @cartesian
         def is_wall_boundary(p: TensorLike) -> TensorLike:
             """Check if point where velocity is defined is on boundary."""
+            len = 0.2
             bd0 = bm.array([[0.0, 0.75], [0.5, 0.75], [0.0, 1.25], [0.5, 1.25],
                             [0.5, 0.75], [0.5, 0.00], [0.5, 1.25], [0.5, 2.00],
 
-                            [2.5, 0], [2.5, 1], [2.5, 1], [2.6, 1], [2.6, 1], [2.6, 0],
-                            [4.5, 0], [4.5, 1], [4.5, 1], [4.6, 1], [4.6, 1], [4.6, 0],
+                            [2.5, 0], [2.5, len], [2.5, len], [2.6, len], [2.6, len], [2.6, 0],
+                            [4.5, 0], [4.5, len], [4.5, len], [4.6, len], [4.6, len], [4.6, 0],
 
                             [5.5, 0.00], [5.5, 0.75], [5.5, 0.75], [6.0, 0.75],
                             [5.5, 1.25], [5.5, 2.00], [5.5, 1.25], [6.0, 1.25],
 
                             [3.5, 1], [3.6, 1], [3.5, 1], [3.5, 2], [3.6, 1], [3.6, 2],
-                            [2.5, 1], [2.6, 1], [2.5, 1], [2.5, 2], [2.6, 1], [2.6, 2],
+                            [2.5, 2-len], [2.6, 2-len], [2.5, 2-len], [2.5, 2], [2.6, 2-len], [2.6, 2],
                            ])
             cond0 = self.is_lateral_boundary(p, bd0)
             cond1 = (bm.abs(p[..., 1]) < self.eps) | (bm.abs(p[..., 1] - 2.0) < self.eps)
@@ -513,11 +526,11 @@ class WPRLFEMModel(ComputationalModel):
         """
         Assemble the linear system for the Stokes equations.
         """
-        # from fealpy.mesh import TensorPrismMesh
-        # self.mesh = TensorPrismMesh(self.tmesh, self.imesh)
+        from fealpy.mesh import TensorPrismMesh
+        self.mesh = TensorPrismMesh(self.tmesh, self.imesh)
         
-        # self.uspace = functionspace(self.mesh, ('Lagrange', 2), shape=(3, -1))
-        # self.pspace = functionspace(self.mesh, ('Lagrange', 1))
+        self.uspace = functionspace(self.mesh, ('Lagrange', 2), shape=(3, -1))
+        self.pspace = functionspace(self.mesh, ('Lagrange', 1))
         
         self.int_space0 = LagrangeFESpace(self.imesh, p=1)
         self.int_space1 = LagrangeFESpace(self.imesh, p=2)
@@ -567,23 +580,23 @@ class WPRLFEMModel(ComputationalModel):
         print(f'自由度个数: {Ax.shape[0]*Mz.shape[0]*3+Bx.shape[1]*Mz_.shape[1]}')
         op = StokesOperator(Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_)
        
-        # A1 = sp.kron(Ax.assembly().to_scipy(), Mz.assembly().to_scipy()) + \
-        #      sp.kron(Mx.assembly().to_scipy(), Az.assembly().to_scipy())
-        # B0 = sp.kron(Bx.assembly().to_scipy().T, Mz_.assembly().to_scipy().T)
-        # B1 = sp.kron(Mx_.assembly().to_scipy().T, Bz.assembly().to_scipy().T)
+        A1 = sp.kron(Ax, Mz) + \
+             sp.kron(Mx, Az)
+        B0 = sp.kron(Bx, Mz_)
+        B1 = sp.kron(Mx_, Bz)
         
-        # A0 = sp.block_diag((A1, A1, A1))
-        # B = sp.bmat([[B0, B1]])
-        # A = sp.bmat([[A0, B.T],
-        #              [B, None]])
+        A0 = sp.block_diag((A1, A1, A1))
+        B = sp.bmat([[B0, B1]])
+        A = sp.bmat([[A0, B.T],
+                     [B, None]])
 
-        # from fealpy.sparse import COOTensor
-        # A = COOTensor(
-        #     indices=bm.stack([A.row, A.col], axis=0),
-        #     values=A.data,
-        #     spshape=A.shape
-        # )
-        A = None
+        from fealpy.sparse import COOTensor
+        A = COOTensor(
+            indices=bm.stack([A.row, A.col], axis=0),
+            values=A.data,
+            spshape=A.shape
+        )
+        # A = None
         self.n_A = op.n_A
         self.n_p = op.n_p
         self.x0 = bm.zeros((self.n_A,), dtype=bm.float64)
@@ -717,49 +730,43 @@ class WPRLFEMModel(ComputationalModel):
             Bxi[j-1] = Pro_p[j-1].T @ Bxi[j] @ sp.block_diag([Pro_u[j-1],Pro_u[j-1]])
             Mx_i[j-1] = Pro_p[j-1].T @ Mx_i[j] @ Pro_u[j-1]
 
-        P_u = [None] * (level-1)
-        P_p = [None] * (level-1)
-        R_u = [None] * (level-1)
-        R_p = [None] * (level-1)
+        self.P_u = [None] * (level-1)
+        self.P_p = [None] * (level-1)
+        self.R_u = [None] * (level-1)
+        self.R_p = [None] * (level-1)
 
-        auxMat = [None] * level
-        A0i = [None] * level
-        Ai = [None] * level
-        Bi = [None] * level
-        Bti = [None] * level
-        bigAi = [None] * level
+        self.auxMat = [None] * level
+        self.A0i = [None] * level
+        self.Ai = [None] * level
+        self.Bi = [None] * level
+        self.Bti = [None] * level
+        self.bigAi = [None] * level
 
         Iz2 = spdiags(bm.ones((op.n_Mz,)), 0, op.n_Mz, op.n_Mz).to_scipy()
         Iz1 = spdiags(bm.ones((op.n_Mz_,)), 0, op.n_Mz_, op.n_Mz_).to_scipy()
 
         for j in range(self.level):
-            A0i[j] = A0iOperator(Axi[j], Mxi[j], Mz, Az)
-            Ai[j] = AiOperator(Axi[j], Mxi[j], Mz, Az)
-            Bi[j] = BiOperator(Bxi[j], Mx_i[j], Mz_, Bz)
-            Bti[j] = BtiOperator(Bxi[j].T, Mx_i[j].T, Mz_, Bz)
-            Nu[j] = A0i[j].shape[0]
-            Np[j] = Bi[j].shape[0]
+            self.A0i[j] = A0iOperator(Axi[j], Mxi[j], Mz, Az)
+            self.Ai[j] = AiOperator(Axi[j], Mxi[j], Mz, Az)
+            self.Bi[j] = BiOperator(Bxi[j], Mx_i[j], Mz_, Bz)
+            self.Bti[j] = BtiOperator(Bxi[j].T, Mx_i[j].T, Mz_, Bz)
+            Nu[j] = self.A0i[j].shape[0]
+            Np[j] = self.Bi[j].shape[0]
             # bigAi[j] = (sp.bmat([[Ai[j], Bi[j].T],[Bi[j], None]]).tocsr())
             if j < self.level - 1:
-                P_u[j] = KronOperator(Pro_u[j], Iz2, num=3)
-                P_p[j] = KronOperator(Pro_p[j], Iz1)
-                R_u[j] = KronOperator(Pro_u[j].T, Iz2, num=3)
-                R_p[j] = KronOperator(Pro_p[j].T, Iz1)
+                self.P_u[j] = KronOperator(Pro_u[j], Iz2, num=3)
+                self.P_p[j] = KronOperator(Pro_p[j], Iz1)
+                self.R_u[j] = KronOperator(Pro_u[j].T, Iz2, num=3)
+                self.R_p[j] = KronOperator(Pro_p[j].T, Iz1)
             
             if j > 0:
                 BBt = sp.kron(Bxi[j]@Bxi[j].T, Mz_@Mz_.T) + sp.kron(Mx_i[j]@Mx_i[j].T, Bz@Bz.T)
-                BABt = sp.kron(Bxi[j]@sp.block_diag((Axi[j], Axi[j]))@Bxi[j].T, Mz_@Mz@Mz_.T) \
-                     + sp.kron(Bxi[j]@sp.block_diag((Mxi[j], Mxi[j]))@Bxi[j].T, Mz_@Az@Mz_.T) \
-                     + sp.kron(Mx_i[j]@Axi[j]@Mx_i[j].T, Bz@Mz@Bz.T) \
-                     + sp.kron(Mx_i[j]@Mxi[j]@Mx_i[j].T, Bz@Az@Bz.T)
-                
+
                 # Su = sp.tril(A0)
-                Sp = sp.tril(BBt)
-                Spt = sp.triu(BBt)
+                Sp = sp.tril(BBt).tocsr()
+                Spt = sp.triu(BBt).tocsr()
                 # DSp = BBt.diagonal()
                 DSp = sp.diags_array(1/BBt.diagonal())
-                invSp = Sp @ DSp
-                invSpt = Spt @ DSp
                 # Bt = self.from_scipy(Bt)
                 # BBt = self.from_scipy(BBt.tocoo()).tocsr()
                 # BABt = self.from_scipy(BABt.tocoo()).tocsr()
@@ -768,33 +775,38 @@ class WPRLFEMModel(ComputationalModel):
                 # Sp = self.from_scipy(Sp)
                 # DSp = bm.tensor(DSp)
 
-                auxMat[j] = {
-                    'Bt': Bti[j],
+                self.auxMat[j] = {
+                    'Bt': self.Bti[j],
                     'BBt': BBt,
-                    'BABt': BABt,
                     # 'Su': Su.tocsr(),
-                    'Spt': Spt.tocsr(),
-                    'Sp': Sp.tocsr(),
+                    'Spt': Spt,
+                    'Sp': Sp,
                     # 'DSp': DSp,
-                    'invSpt': invSpt,
-                    'invSp': invSp
+                    'invSpt': Spt @ DSp,
+                    'invSp': Sp @ DSp
                 }
+
+                self.auxMat[j]['BABt'] = sp.kron(Bxi[j]@sp.block_diag((Axi[j], Axi[j]))@Bxi[j].T, Mz_@Mz@Mz_.T) \
+                     + sp.kron(Bxi[j]@sp.block_diag((Mxi[j], Mxi[j]))@Bxi[j].T, Mz_@Az@Mz_.T) \
+                     + sp.kron(Mx_i[j]@Axi[j]@Mx_i[j].T, Bz@Mz@Bz.T) \
+                     + sp.kron(Mx_i[j]@Mxi[j]@Mx_i[j].T, Bz@Az@Bz.T)
+                self.auxMat[j]['Su0'] = self.A0i[j].assembly()
             # Ai[j] = self.from_scipy(Ai[j])
             # Bi[j] = self.from_scipy(Bi[j])
         
-        self.P_u = P_u
-        self.P_p = P_p
-        self.R_u = R_u
-        self.R_p = R_p
+        # self.P_u = P_u
+        # self.P_p = P_p
+        # self.R_u = R_u
+        # self.R_p = R_p
 
-        self.A0i = A0i
-        self.Ai = Ai
-        self.Bi = Bi
-        self.Bti = Bti
+        # self.A0i = A0i
+        # self.Ai = Ai
+        # self.Bi = Bi
+        # self.Bti = Bti
         self.Nu = Nu
         self.Np = Np
-        self.auxMat = auxMat
-        self.bigAi = (sp.bmat([[Ai[0].assembly(), Bti[0].assembly()],[Bi[0].assembly(), None]]).tocsr())
+        # self.auxMat = auxMat
+        self.bigAi = (sp.bmat([[self.Ai[0].assembly(), self.Bti[0].assembly()],[self.Bi[0].assembly(), None]]).tocsr())
             
     def vcycle(self, ru, rp, J=None):
         if J is None:
@@ -813,8 +825,10 @@ class WPRLFEMModel(ComputationalModel):
         R_u = self.R_u[J-1]
         R_p = self.R_p[J-1] 
 
-        self.auxMat[J]['Su0'] = sp.tril(self.A0i[J].assembly()).tocsr()
-
+        start = time.time()
+        # import ipdb;ipdb.set_trace()
+        # self.auxMat[J]['Su0'] = self.A0i[J].assembly()
+        self.assembly_time += time.time() - start
         # pre-smoothing
         eu, ep = self.smoothing(bm.zeros((3*self.Nu[J],), dtype=bm.float64),
                                 bm.zeros((self.Np[J],), dtype=bm.float64),ru,rp,J)
@@ -823,24 +837,28 @@ class WPRLFEMModel(ComputationalModel):
                 eu, ep = self.smoothing(eu,ep,ru,rp,J)
 
         # form residual and restrict onto coarse grid
+        start = time.time()
         rru = ru - self.Ai[J] @ eu - self.Bti[J] @ ep
         rrp = rp - self.Bi[J] @ eu
 
         ruc = R_u @ rru
         rpc = R_p @ rrp
+        self.cycle_MUL_time += time.time() - start
         # coarse grid correction
         euc, epc = self.vcycle(ruc, rpc, J-1)
 
         # correction on the fine grid
+        start = time.time()
         tempeu = P_u @ euc
         tempep = P_p @ epc
+        self.cycle_MUL_time += time.time() - start
         eu += tempeu
         ep += tempep
 
         # post-smoothing
         for _ in range(self.smoothing_times):
             eu, ep = self.smoothing(eu,ep,ru,rp,J)
-
+        # del self.auxMat[J]['Su0']
         return eu, ep   
 
     def wcycle(self, r, J=None): 
@@ -925,15 +943,16 @@ class WPRLFEMModel(ComputationalModel):
     @solve.register('mg')
     def solve(self, op: StokesOperator, F):
         # initial set up
+        start = time.time()
         self.setup(op)
+        self.setup_time += time.time() - start
+        print(self.initial_assembly_time,self.setup_time)
         self.logger.info(f'Step 4. setup 完成\n')
-        bigF = F
         bigu = bm.zeros_like(F)
- 
-        bigr = bigF - op @ bigu
+        bigr = F
 
         k = 0
-        nb = bm.linalg.norm(bigF)
+        nb = bm.linalg.norm(F)
         err = bm.zeros((self.maxIt, 1), dtype=bm.float64)
         err[0] = bm.linalg.norm(bigr) / nb
         self.logger.info(f'Step 5. 进入主循环迭代\n')
@@ -947,6 +966,7 @@ class WPRLFEMModel(ComputationalModel):
             elif self.cycle_type == 'WCYCLE':
                 eu, ep = self.wcycle(bigr[:-pdof], bigr[-pdof:])
                 # bigerru = self.wcycle(bigr)
+            
             bigerru = bm.concat([eu, ep])
             bigu = bigu + bigerru
             bigr = bigr - op @ bigerru
@@ -958,6 +978,8 @@ class WPRLFEMModel(ComputationalModel):
                 f'MG Vcycle iter: {k:2d},   '
                 f'err = {bm.max(err[k, :]):8.4e}'
             )
+
+        self.auxMat
         err = err[:k]
         itStep = k
         cost = time.time() - start
@@ -972,13 +994,19 @@ class WPRLFEMModel(ComputationalModel):
             f"total time in SGS: {self.SGS_time}\n"
             f"total time in MUL of smoothing: {self.MUL_time}\n"
             f"total time in smoothing: {self.smoothing_time}\n"
+            f"total time in cycle assembly: {self.assembly_time}\n"
+            f"total time in cycle MUL: {self.cycle_MUL_time}\n"
             f"total time: {cost}\n\n"
             f"粗网格上求解次数: {self.coarse_count}\n"
             f"粗网格总时间占比: {self.coarse_time / cost},  \n"
             f"SGS平滑总时间占比: {self.SGS_time / cost},  \n"
             f"平滑@计算总时间占比: {self.MUL_time / cost},  \n"
             f"Smoothing总时间占比: {self.smoothing_time / cost},   \n"
-            f"粗网格和平滑总时间占比: {(self.coarse_time+self.smoothing_time) / cost}")
+            f"粗网格和平滑总时间占比: {(self.coarse_time+self.smoothing_time) / cost},   \n"
+            f"A0组装时间占比: {self.assembly_time / cost},  \n"
+            f"cycle矩阵乘法时间占比: {self.cycle_MUL_time / cost},  \n\n"
+            f"矩阵初次组装时间: {self.initial_assembly_time},   \n"
+            f"setup时间: {self.setup_time},   \n")
         
         if k > self.maxIt:
             print("NOTE: the iterative method does not converge!")
@@ -990,18 +1018,19 @@ class WPRLFEMModel(ComputationalModel):
         raise NotImplementedError("AMG solver not yet implemented.")
 
     def run(self):
-        op, A, F = self.linear_system()
+        import time
+        start = time.time()
+        op0, A, F = self.linear_system()
         self.logger.info(f'Step 1. 完成初步线性系统组装\n')
-        op, F1, BdDof = self.apply_bc(op, bm.copy(F))
-        
-        self.logger.info(f'Step 2. 完成边界自由度处理\n')
-        import gc
+        op, F1, BdDof = self.apply_bc(op0, bm.copy(F))
+        del op0
         gc.collect()
+        self.logger.info(f'Step 2. 完成边界自由度处理\n')
 
         import time
         start = time.time()
         self.solver = 'mg'
-        
+        # self.solver = 'direct'
         if self.solver == 'direct':
             BC = DirichletBC(
                 (self.uspace, self.pspace),
@@ -1023,13 +1052,14 @@ class WPRLFEMModel(ComputationalModel):
             bd_flag = bm.zeros((len(F),), dtype=bm.bool)
             bm.set_at(bd_flag, BdDof, True)
             self.logger.info(f'Step 3. 开始多重网格setup阶段\n')
+            self.initial_assembly_time += time.time() - start
             x_in = self.solve['mg'](op, F1[~bd_flag])
             x = bm.set_at(F1, ~bd_flag, x_in)
         
         uh = x[:3*self.ugdof]
         ph = x[3*self.ugdof:]
         print(ph.max(),uh.max())
-        # self.post_process(uh ,ph)
+        self.post_process(uh ,ph)
         return uh, ph
     
     def error(self):
