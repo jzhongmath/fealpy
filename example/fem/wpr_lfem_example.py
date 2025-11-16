@@ -25,12 +25,16 @@ parser.add_argument('--block',
 parser.add_argument('--inlet',
         default= {
                 'length': 0.5,
-                'width': 0.5
+                'width': 1
         }, 
         help='Default backend is numpy')
 
 parser.add_argument('--gap',
     default = 0.1, type = float,
+    help = "Radius of the pillars.")
+
+parser.add_argument('--gap_len',
+    default = 0.5, type = float,
     help = "Radius of the pillars.")
 
 parser.add_argument('--h',
@@ -87,7 +91,7 @@ options = vars(parser.parse_args())
 
 
 # bm.set_backend('pytorch')
-bm.set_backend('numpy'); options['lc'] = 2
+bm.set_backend('numpy'); options['lc'] = 0.4
 
 # bm.set_default_device('cuda')
 

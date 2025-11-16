@@ -21,16 +21,16 @@ def indofP1(mesh: TriangleMesh, threshold=None, return_index=False, tensor_mesh=
     return ~bd_flag
 
 
-def transferP1red(mesh: TriangleMesh, level:int, threshold=None):
+def transferP1red(mesh: TriangleMesh, level:int, threshold=None, tensor_mesh=False):
     Pro_p = [None]*(level-1)
     
     if threshold == None:
             return mesh.uniform_refine(n=level-1, returnim=True)[::-1]
 
     for i in range(level-1):
-        flag0 = indofP1(mesh, threshold)
+        flag0 = indofP1(mesh, threshold=threshold, tensor_mesh=tensor_mesh)
         P = mesh.uniform_refine(n=1, returnim=True)[0]
-        flag1 = indofP1(mesh, threshold)
+        flag1 = indofP1(mesh, threshold=threshold, tensor_mesh=tensor_mesh)
         Pro_p[i] = P.to_scipy()[bm.to_numpy(flag1)][:,bm.to_numpy(flag0)]
 
     return Pro_p

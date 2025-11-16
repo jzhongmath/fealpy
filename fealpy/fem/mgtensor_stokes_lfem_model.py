@@ -689,6 +689,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         inflag_uz = ~isDDof
         inflag_u = indofP2(self.tmesh, threshold=self.is_velocity_boundary, tensor_mesh=True)
         inflag_p = indofP1(self.tmesh, threshold=self.is_pressure_boundary, tensor_mesh=True)
+        print(inflag_p.sum())
         inflag_u = bm.to_numpy(inflag_u)
         Biginflag_u = bm.to_numpy(bm.concat([inflag_u, inflag_u], axis=0))
         inflag_uz = bm.to_numpy(inflag_uz)
@@ -738,10 +739,11 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         Np = bm.zeros((level,), dtype=bm.int32)
         
         # Compute Pro and Res of u and p.
-        Pro_p = transferP1red(self.mesh0, self.level, self.is_pressure_boundary)
+        Pro_p = transferP1red(self.mesh0, self.level, self.is_pressure_boundary, tensor_mesh=True)
         Pro_u = transferP2red(self.mesh1, self.level, self.is_velocity_boundary, tensor_mesh=True)
         
         for j in range(level - 1, 0, -1):
+            # import ipdb;ipdb.set_trace()
             Axi[j-1] = Pro_u[j-1].T @ Axi[j] @ Pro_u[j-1]
             Mxi[j-1] = Pro_u[j-1].T @ Mxi[j] @ Pro_u[j-1]
             Bxi[j-1] = Pro_p[j-1].T @ Bxi[j] @ sp.block_diag([Pro_u[j-1],Pro_u[j-1]])

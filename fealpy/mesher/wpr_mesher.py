@@ -38,6 +38,7 @@ class WPRMesher:
                 'width': 0.5
             },
             'gap': 0.1,
+            'gap_len': 1,
             'h': 0.6,
             'return_mesh': True,
             'show_figure': True,
@@ -97,7 +98,7 @@ class WPRMesher:
         block = gmsh.model.occ.cut([(2, main_block)], [(2, sub_block0), (2, sub_block1), (2, sub_block2), (2, sub_block3)])
         gmsh.model.occ.synchronize()
         
-        len = 0.2
+        len = option['gap_len']
         slit0 = gmsh.model.occ.addRectangle(
             1.5, 2 - len, 0,
             gap,

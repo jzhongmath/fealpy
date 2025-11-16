@@ -403,7 +403,8 @@ class WPRLFEMModel(ComputationalModel):
             y = p[..., 1]
             z = p[..., 2]
             result = bm.zeros(p.shape, dtype=bm.float64)
-            result[..., 0] = 25**2 *(y - 0.75) * (1.25-y) * z * (0.4-z)
+            len = self.options['inlet']['length']
+            result[..., 0] = 10*25**2 *(y - (1-0.5*len)) * (1+0.5*len-y) * z * (0.4-z)
             result[..., 1] = bm.array(0.0)
             return result
         
@@ -441,15 +442,18 @@ class WPRLFEMModel(ComputationalModel):
         @cartesian
         def is_wall_boundary(p: TensorLike) -> TensorLike:
             """Check if point where velocity is defined is on boundary."""
-            len = 0.2
-            bd0 = bm.array([[0.0, 0.75], [0.5, 0.75], [0.0, 1.25], [0.5, 1.25],
-                            [0.5, 0.75], [0.5, 0.00], [0.5, 1.25], [0.5, 2.00],
+            len =  self.options['gap_len']
+            inlet = self.options['inlet']
+            inlet_len = inlet['length']
+
+            bd0 = bm.array([[0.0, 1-0.5*inlet_len], [0.5, 1-0.5*inlet_len], [0.0, 1+0.5*inlet_len], [0.5, 1+0.5*inlet_len],
+                            [0.5, 1-0.5*inlet_len], [0.5, 0.00], [0.5, 1+0.5*inlet_len], [0.5, 2.00],
 
                             [2.5, 0], [2.5, len], [2.5, len], [2.6, len], [2.6, len], [2.6, 0],
                             [4.5, 0], [4.5, len], [4.5, len], [4.6, len], [4.6, len], [4.6, 0],
 
-                            [5.5, 0.00], [5.5, 0.75], [5.5, 0.75], [6.0, 0.75],
-                            [5.5, 1.25], [5.5, 2.00], [5.5, 1.25], [6.0, 1.25],
+                            [5.5, 0.00], [5.5, 1-0.5*inlet_len], [5.5, 1-0.5*inlet_len], [6.0, 1-0.5*inlet_len],
+                            [5.5, 1+0.5*inlet_len], [5.5, 2.00], [5.5, 1+0.5*inlet_len], [6.0, 1+0.5*inlet_len],
 
                             [3.5, 1], [3.6, 1], [3.5, 1], [3.5, 2], [3.6, 1], [3.6, 2],
                             [2.5, 2-len], [2.6, 2-len], [2.5, 2-len], [2.5, 2], [2.6, 2-len], [2.6, 2],
