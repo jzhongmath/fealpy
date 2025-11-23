@@ -25,7 +25,7 @@ parser.add_argument('--block',
 parser.add_argument('--inlet',
         default= {
                 'length': 0.5,
-                'width': 1
+                'width': 0.8
         }, 
         help='Default backend is numpy')
 
@@ -34,7 +34,7 @@ parser.add_argument('--gap',
     help = "Radius of the pillars.")
 
 parser.add_argument('--gap_len',
-    default = 0.5, type = float,
+    default = 1, type = float,
     help = "Radius of the pillars.")
 
 parser.add_argument('--h',
@@ -91,15 +91,15 @@ options = vars(parser.parse_args())
 
 
 # bm.set_backend('pytorch')
-bm.set_backend('numpy'); options['lc'] = 0.4
-
+bm.set_backend('numpy'); options['lc'] = 0.3
+# options['gap_len'] = 0.3
 # bm.set_default_device('cuda')
 
 mesher = WPRMesher(options)
 mesher.generate()
 
 level = options['level']
-imesh = IntervalMesh.from_interval_domain([0, 0.4], nx=3)
+imesh = IntervalMesh.from_interval_domain([0, 0.4], nx=8)
 
 model = WPRLFEMModel(options=options)
 model.set_init_mesher(mesher, imesh)

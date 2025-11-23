@@ -6,14 +6,14 @@ from fealpy.decorator import variantmethod, cartesian
 from fealpy.model import ComputationalModel
 
 from fealpy.mesh import TriangleMesh, LagrangeTriangleMesh
-from fealpy.mesher import DLDMicrofluidicChipMesher
+from fealpy.mesher import WPRMesher
 from fealpy.geometry.implicit_curve import CircleCurve
 from fealpy.functionspace import functionspace, ParametricLagrangeFESpace, TensorFunctionSpace, LagrangeFESpace
 from fealpy.fem import LinearForm, BilinearForm, BlockForm, LinearBlockForm
 from fealpy.fem import ScalarDiffusionIntegrator as DiffusionIntegrator
 from fealpy.fem import DirichletBC, StokesDirichletBC
 from fealpy.fem import PressWorkIntegrator, SourceIntegrator
-from fealpy.solver import StokesLSCDGS, cg, spsolve, transferP1red, transferP2red, indofP1, indofP2
+from fealpy.solver import StokesLSCDGS2D, cg, spsolve, transferP1red, transferP2red, indofP1, indofP2
 from fealpy.sparse import spdiags, coo_matrix, csr_matrix
 from fealpy.sparse.ops import bmat
 
@@ -60,6 +60,7 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
             
         self.level = options.get('level', 4)
 
+        self.eps = 1e-10
         self.options = options
         self.x0 = options.get('x0', None)
         self.tol = options.get('tol', 1e-8)  
@@ -83,25 +84,36 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         self.SGS_time = 0
         self.MUL_time = 0
 
-    def set_init_mesher(self, mesher: DLDMicrofluidicChipMesher):
+        self.p = 2
+
+    def set_init_mesher(self, mesher: WPRMesher):
         """
         Set the initial mesh for the simulation.
         
         Parameters:
             mesh: The computational mesh object
         """
-        mesh = mesher.mesh
-        self.mesh0 = TriangleMesh(mesh.entity('node'), mesh.entity('cell'))
-        self.mesh1 = TriangleMesh(mesh.entity('node'), mesh.entity('cell'))
-        mesh.uniform_refine(self.level-1)
-        self.mesh = mesh
-        self.radius = mesher.radius
-        self.centers = mesher.centers
-        self.boundary = mesher.boundary
-        self.inlet_boundary = mesher.inlet_boundary
-        self.outlet_boundary = mesher.outlet_boundary
-        self.wall_boundary = mesher.wall_boundary
-        self.project_edges = mesher.project_edges
+        tmesh = mesher.mesh
+        # from fealpy.mesh import TensorPrismMesh
+        # mesh = TensorPrismMesh(tmesh, imesh)
+
+        self.mesh0 = TriangleMesh(tmesh.entity('node'), tmesh.entity('cell'))
+        self.mesh1 = TriangleMesh(tmesh.entity('node'), tmesh.entity('cell'))
+        tmesh.uniform_refine(self.level-1)
+        self.mesh = tmesh
+
+        import matplotlib.pyplot as plt
+        # from fealpy.mesh import TensorPrismMesh
+        # mesh = TensorPrismMesh(self.tmesh, imesh)
+        # mesh = tmesh
+        # ipoints = tmesh.interpolation_points(p=1)
+        # fig = plt.figure()
+        # axes = fig.add_subplot(111)
+        # mesh.add_plot(axes)
+        # mesh.find_node(axes, node=ipoints, 
+        #             showindex=True, color='r', fontsize='10')
+        # tmesh.find_cell(axes, showindex=True, fontsize='35')
+        # plt.show()
 
     def set_space_degree(self, p: int=2):
         """
@@ -119,22 +131,14 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
             x = p[..., 0]
             y = p[..., 1]
             result = bm.zeros(p.shape, dtype=bm.float64)
-            result[..., 0] = y * (1-y)
+            len = self.options['inlet']['width']
+            # result[..., 0] = 25**2 *y*(2-y)
+            result[..., 0] = 25**2 *(y - (1-0.5*len)) * (1+0.5*len-y)
             result[..., 1] = bm.array(0.0)
             return result
         
         @cartesian
         def wall_velocity(p: TensorLike) -> TensorLike:
-            """Compute exact solution of velocity."""
-            x = p[..., 0]
-            y = p[..., 1]
-            result = bm.zeros(p.shape, dtype=bm.float64)
-            result[..., 0] = bm.array(0.0)
-            result[..., 1] = bm.array(0.0)
-            return result
-        
-        @cartesian
-        def obstacle_velocity(p: TensorLike) -> TensorLike:
             """Compute exact solution of velocity."""
             x = p[..., 0]
             y = p[..., 1]
@@ -155,44 +159,48 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         @cartesian
         def is_inlet_boundary( p: TensorLike) -> TensorLike:
             """Check if point where velocity is defined is on boundary."""
-            bd = self.inlet_boundary
-            return self.is_boundary(p, bd)
-        
+            tag = bm.abs(p[..., 0] - 0.0) < self.eps
+            return tag
+       
         @cartesian
         def is_outlet_boundary( p: TensorLike) -> TensorLike:
             """Check if point where pressure is defined is on boundary."""
-            bd = self.outlet_boundary
-            return self.is_boundary(p, bd)
+            tag = bm.abs(p[..., 0] - 6.0) < self.eps
+            return tag
 
         @cartesian
         def is_wall_boundary(p: TensorLike) -> TensorLike:
             """Check if point where velocity is defined is on boundary."""
-            bd = self.wall_boundary
-            return self.is_boundary(p, bd)
-        
-        @cartesian
-        def is_obstacle_boundary(p: TensorLike) -> TensorLike:
-            """Check if point where velocity is defined is on boundary."""
-            x = p[..., 0]
-            y = p[..., 1]
-            radius = self.options['radius']
-            atol = 1e-12
-            on_boundary = bm.zeros_like(x, dtype=bool)
-            for center in self.centers:
-                cx, cy = center
-                on_boundary |= (x - cx)**2 + (y - cy)**2 < radius**2 + atol
-            return on_boundary
-        
+            len =  self.options['gap_len']
+            inlet = self.options['inlet']
+            inlet_len = inlet['width']
+            
+            bd0 = bm.array([
+                            [0.0, 1-0.5*inlet_len], [0.5, 1-0.5*inlet_len], [0.0, 1+0.5*inlet_len], [0.5, 1+0.5*inlet_len],
+                            [0.5, 1-0.5*inlet_len], [0.5, 0.00], [0.5, 1+0.5*inlet_len], [0.5, 2.00],
+
+                            [2.5, 0], [2.5, len], [2.5, len], [2.6, len], [2.6, len], [2.6, 0],
+                            [4.5, 0], [4.5, len], [4.5, len], [4.6, len], [4.6, len], [4.6, 0],
+
+                            [5.5, 0.00], [5.5, 1-0.5*inlet_len], [5.5, 1-0.5*inlet_len], [6.0, 1-0.5*inlet_len],
+                            [5.5, 1+0.5*inlet_len], [5.5, 2.00], [5.5, 1+0.5*inlet_len], [6.0, 1+0.5*inlet_len],
+
+                            [3.5, 2-len], [3.6, 2-len], [3.5, 2-len], [3.5, 2], [3.6, 2-len], [3.6, 2],
+                            [1.5, 2-len], [1.6, 2-len], [1.5, 2-len], [1.5, 2], [1.6, 2-len], [1.6, 2],
+                           ])
+            cond0 = self.is_lateral_boundary(p, bd0)
+            cond1 = (bm.abs(p[..., 1]) < self.eps) | (bm.abs(p[..., 1] - 2.0) < self.eps)
+            return cond0 | cond1
+                
         self.inlet_velocity = inlet_velocity
         self.wall_velocity = wall_velocity
-        self.obstacle_velocity = obstacle_velocity
         self.outlet_pressure = outlet_pressure
+
         self.is_inlet_boundary = is_inlet_boundary
         self.is_outlet_boundary = is_outlet_boundary
         self.is_wall_boundary = is_wall_boundary
-        self.is_obstacle_boundary = is_obstacle_boundary
 
-    def is_boundary(self, p: TensorLike, bd: TensorLike) -> TensorLike:
+    def is_lateral_boundary(self, p: TensorLike, bd: TensorLike) -> TensorLike:
         """Check if point is on boundary."""
         atol = 1e-12
         v0 = p[:, None, :] - bd[None, 0::2, :] # (NN, NI, 2)
@@ -208,8 +216,7 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         """Check if point where velocity is defined is on boundary."""
         inlet = self.is_inlet_boundary(p)
         wall = self.is_wall_boundary(p)
-        obstacle = self.is_obstacle_boundary(p)
-        return inlet | wall | obstacle
+        return inlet | wall
     
     @cartesian
     def is_pressure_boundary(self, p: TensorLike) -> TensorLike:
@@ -249,7 +256,7 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         
         A00 = BilinearForm(self.u0space)
         self.BD = DiffusionIntegrator()
-        self.BD.coef = 1.0
+        self.BD.coef = 0.5
         A00.add_integrator(self.BD)
         A01 = BilinearForm((self.pspace, self.uspace))
         self.BP = PressWorkIntegrator()
@@ -480,7 +487,7 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         A = self.Ai[J]
         B = self.Bi[J]
         start = time.time()
-        smoother = StokesLSCDGS(auxMat,smootherOpt)
+        smoother = StokesLSCDGS2D(auxMat,smootherOpt)
         u, p, self.SGS_time, self.MUL_time = smoother.run(u,p,f,g,A,B,self.SGS_time,self.MUL_time)
         t = time.time() - start
         print(t)
@@ -510,7 +517,7 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         inflag_p, idx1 = indofP1(self.mesh, threshold=self.is_pressure_boundary, return_index=True)
 
         flag = [inflag_u, inflag_p]
-        idx = [idx0, idx1 + 2*len(points[1])]
+        idx = [idx0, idx1 + 2*len(points[0])]
 
         BdDof = []
         for i in range(2):
@@ -526,8 +533,10 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
             uh = bm.set_at(uh, (..., isBdDof), val)
 
         BdDof = bm.concat([BdDof[0], BdDof[1]], axis=0)
-        A = bmat([[A0, None],[None, A0]])
-        bigA = bmat([[A, B.T], [B, None]])
+        A = sp.bmat([[A0.to_scipy(), None],[None, A0.to_scipy()]]).tocsr()
+        bigA = sp.bmat([[A, B.to_scipy().T],[B.to_scipy(),None]]).tocsr()
+        # A = bmat([[A0, None],[None, A0]])
+        # bigA = bmat([[A, B.T], [B, None]])
         F = F - bigA @ uh
         F = bm.set_at(F, BdDof, uh[BdDof])
 
@@ -612,7 +621,7 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         A00, A01, L0, L1 = self.linear_system()
         pdof = self.pspace.number_of_global_dofs()
         self.solver = 'direct'
-
+        self.solver = 'mg'
         pdof = L1.shape[0]
         if self.solver == 'direct':
             A0 = A00.assembly()
@@ -629,7 +638,6 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
             )
 
             bigA0, bigF0 = BC.apply(bigA0, bigF0)
-            # bigF0[-pdof:] = bigF0[-pdof:] - bm.mean(bigF0[-pdof:])
             bigA0 = bigA0.to_scipy()
             print(f'开始使用直接法进行求解')
             start = time.time()
@@ -639,17 +647,15 @@ class DLDMicrofluidicChipLFEMModel(ComputationalModel):
         elif self.solver == 'mg':
             A0 = A00.assembly()
             B = A01.assembly().T
-            f = L0.assembly()
-            g = L1.assembly()
-            F = bm.concat([f, g], axis=0)
-            A0, B, F, BdDof = self.apply_bc(A0, B, F)
+            F = LinearBlockForm([L0, L1]).assembly()
             bd_flag = bm.zeros((len(F),), dtype=bm.bool)
+            A0, B, F, BdDof = self.apply_bc(A0, B, F)
             bm.set_at(bd_flag, BdDof, True)
             self.logger.info(f'Step 3. 开始多重网格setup阶段\n')
-            
             x_in = self.solve['mg'](A0, B, F[~bd_flag]) 
-            x = bm.set_at(F, ~bd_flag, x_in)       
-        # import ipdb;ipdb.set_trace()
+            x = bm.set_at(F, ~bd_flag, x_in)  
+            print(x.max(), x.min())
+
         uh = x[:-pdof]
         ph = x[-pdof:]
         self.post_process(uh ,ph)

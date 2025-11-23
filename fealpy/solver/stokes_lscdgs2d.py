@@ -13,7 +13,7 @@ from ..solver.direct import _cupy_spsolve_triangular
 
 import time
 
-class StokesLSCDGS():
+class StokesLSCDGS2D():
     def __init__(self, 
         auxMat,
         smootherOpt
@@ -22,8 +22,8 @@ class StokesLSCDGS():
     
     def set_up(self, auxMat, smootherOpt):
         self.smoothingstep = smootherOpt.get('smoothingstep', 2)
-        self.smoothingSp = smootherOpt.get('smoothingSp', 'GS')
-        self.smoothingbarSp = smootherOpt.get('smoothingbarSp', 'GS')
+        self.smoothingSp = smootherOpt.get('smoothingSp', 'SGS')
+        self.smoothingbarSp = smootherOpt.get('smoothingbarSp', 'SGS')
         self.smoothingbarSpPara = smootherOpt.get('smoothingbarSpPara', 1)
         if (self.smoothingbarSp == 'VCYCLE') or (self.smoothingSp == 'VCYCLE'):
             self.optionmg = {

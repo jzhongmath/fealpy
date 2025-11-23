@@ -95,9 +95,9 @@ class WPRMesher:
             1 - 0.5 * inlet_width
         )
 
-        block = gmsh.model.occ.cut([(2, main_block)], [(2, sub_block0), (2, sub_block1), (2, sub_block2), (2, sub_block3)])
+        # block = gmsh.model.occ.cut([(2, main_block)], [(2, sub_block0), (2, sub_block1), (2, sub_block2), (2, sub_block3)])
+        block = main_block
         gmsh.model.occ.synchronize()
-        
         len = option['gap_len']
         slit0 = gmsh.model.occ.addRectangle(
             1.5, 2 - len, 0,
@@ -124,10 +124,12 @@ class WPRMesher:
         )
 
         block = gmsh.model.occ.cut([(2, main_block)], 
-                                   [(2, slit0), (2, slit1),
+                                   [
+                                    (2, slit0), (2, slit1),
                                     (2, slit2), (2, slit3),
                                     (2, sub_block0), (2, sub_block1), 
-                                    (2, sub_block2), (2, sub_block3)])
+                                    (2, sub_block2), (2, sub_block3)
+                                    ])
         gmsh.model.occ.synchronize()
 
         gmsh.option.setNumber("Mesh.CharacteristicLengthMin", 0.2*lc)
@@ -146,6 +148,14 @@ class WPRMesher:
             evid = bm.array([nodetags_map[j] for j in cell_connectivity])
             cell = evid.reshape((cell_tags.shape[-1],-1))
             self.mesh = TriangleMesh(node,cell)
+            mesh = self.mesh
+            import matplotlib.pyplot as plt
+            fig = plt.figure()
+            axes = fig.add_subplot(111)
+            mesh.add_plot(axes, cellcolor="#80e673")
+            # mesh.find_node(axes=axes, showindex=True, fontsize='20')
+            # mesh.find_cell(axes=axes, showindex=True, fontsize='20')
+            # plt.show()
 
         if show_figure:
             gmsh.option.setNumber("Mesh.SurfaceFaces", 1)

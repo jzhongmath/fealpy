@@ -24,7 +24,7 @@ class StokesLSCDGS():
         self.smoothingstep = smootherOpt.get('smoothingstep', 2)
         self.smoothingSp = smootherOpt.get('smoothingSp', 'SGS')
         self.smoothingbarSp = smootherOpt.get('smoothingbarSp', 'SGS')
-        self.smoothingbarSpPara = smootherOpt.get('smoothingbarSpPara', 1.6)
+        self.smoothingbarSpPara = smootherOpt.get('smoothingbarSpPara', 1.3)
         if (self.smoothingbarSp == 'VCYCLE') or (self.smoothingSp == 'VCYCLE'):
             self.optionmg = {
                 'solvermaxit': 1,
@@ -61,12 +61,19 @@ class StokesLSCDGS():
             n = len(r) // 3
             # u += tfqmr(self.Su, r, maxiter=3)[0]
             # u[n:] = u[n:] + tfqmr(self.Su, r[n:], maxiter=3)[0]
-            
+            # import ipdb;ipdb.set_trace()
+            # import scipy.sparse.linalg as spla
+            # du0 = spla.cg(self.Su0[0], r[:n], maxiter=1, M=self.Su0[1])
+            # du1 = spla.cg(self.Su0[0], r[n:2*n], maxiter=1, M=self.Su0[1])
+            # du2 = spla.cg(self.Su0[0], r[2*n:3*n], maxiter=1, M=self.Su0[1])
+            # du = (self.Su0 @ r.reshape(-1,3,order='F')).reshape(-1,order='F')
+            # import ipdb;ipdb.set_trace()
             du = spsolve_triangular(self.Su0, r.reshape(-1,3,order='F')).reshape(-1,order='F')
             u += du
-            # u[:n] += du[:,0]
-            # u[n:2*n] += du[:,1]
-            # u[2*n:] += du[:,2]
+            # import ipdb;ipdb.set_trace()
+            # u[:n] += du0[0]
+            # u[n:2*n] += du1[0]
+            # u[2*n:] += du2[0]
             SGS_time += time.time() - start
             # Step 2: relax transformed Continuity eqns
             start = time.time()

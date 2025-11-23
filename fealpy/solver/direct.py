@@ -29,6 +29,7 @@ def _mumps_solve(A, b):
 
     ctx = DMumpsContext()
     ctx.set_silent()
+    ctx.set_icntl(28, 2)  # 使用 parallel ordering
     ctx.set_centralized_sparse(A)
 
     ctx.set_rhs(x)

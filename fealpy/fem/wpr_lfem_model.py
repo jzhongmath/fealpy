@@ -187,10 +187,23 @@ class A0iOperator(LinearOperator):
              sp.kron(sp.tril(A=self.Mx, k=-1), self.Az, format='csr') + \
              sp.kron(sp.diags(self.Ax.diagonal()), sp.tril(A=self.Mz), format='csr') + \
              sp.kron(sp.diags(self.Mx.diagonal()), sp.tril(A=self.Az), format='csr')
-
-        # A0_dense = A0 + A1 + A2 + A3
-        # A0_dense = sp.kron(self.Ax, self.Mz) + sp.kron(self.Mx, self.Az)
         return A0_dense
+    
+        # from scipy.sparse.linalg import spilu
+        # import scipy.sparse.linalg as spla
+        # import pyamg
+        # A = sp.kron(self.Ax, self.Mz) + sp.kron(self.Mx, self.Az)
+        # # ilu = spilu(
+        # #     A.tocsc(),
+        # #     drop_tol=1e-6,    # 默认 1e-4，改小保留更多非零
+        # #     fill_factor=10.0  # 默认 10，增大允许 fill-in
+        # # )
+        # # M = spla.LinearOperator(A.shape, matvec=ilu.solve)  # 预条件器
+        # ml = pyamg.ruge_stuben_solver(A)  # AMG solver
+        # M = ml.aspreconditioner()
+        # # A0_dense = A0 + A1 + A2 + A3
+        # # A0_dense = sp.kron(self.Ax, self.Mz) + sp.kron(self.Mx, self.Az)
+        # return (A, M)
     
     def __matmul__(self, x):
         v = bm.copy(x)
@@ -403,8 +416,9 @@ class WPRLFEMModel(ComputationalModel):
             y = p[..., 1]
             z = p[..., 2]
             result = bm.zeros(p.shape, dtype=bm.float64)
-            len = self.options['inlet']['length']
-            result[..., 0] = 10*25**2 *(y - (1-0.5*len)) * (1+0.5*len-y) * z * (0.4-z)
+            len = self.options['inlet']['width']
+            # result[..., 0] = 25**2 *(y - (1-0.5*len)) * (1+0.5*len-y)
+            result[..., 0] = 20*25**2 *(y - (1-0.5*len)) * (1+0.5*len-y) * z * (0.4-z)
             result[..., 1] = bm.array(0.0)
             return result
         
@@ -444,9 +458,10 @@ class WPRLFEMModel(ComputationalModel):
             """Check if point where velocity is defined is on boundary."""
             len =  self.options['gap_len']
             inlet = self.options['inlet']
-            inlet_len = inlet['length']
-
-            bd0 = bm.array([[0.0, 1-0.5*inlet_len], [0.5, 1-0.5*inlet_len], [0.0, 1+0.5*inlet_len], [0.5, 1+0.5*inlet_len],
+            inlet_len = inlet['width']
+            
+            bd0 = bm.array([
+                            [0.0, 1-0.5*inlet_len], [0.5, 1-0.5*inlet_len], [0.0, 1+0.5*inlet_len], [0.5, 1+0.5*inlet_len],
                             [0.5, 1-0.5*inlet_len], [0.5, 0.00], [0.5, 1+0.5*inlet_len], [0.5, 2.00],
 
                             [2.5, 0], [2.5, len], [2.5, len], [2.6, len], [2.6, len], [2.6, 0],
@@ -455,8 +470,8 @@ class WPRLFEMModel(ComputationalModel):
                             [5.5, 0.00], [5.5, 1-0.5*inlet_len], [5.5, 1-0.5*inlet_len], [6.0, 1-0.5*inlet_len],
                             [5.5, 1+0.5*inlet_len], [5.5, 2.00], [5.5, 1+0.5*inlet_len], [6.0, 1+0.5*inlet_len],
 
-                            [3.5, 1], [3.6, 1], [3.5, 1], [3.5, 2], [3.6, 1], [3.6, 2],
-                            [2.5, 2-len], [2.6, 2-len], [2.5, 2-len], [2.5, 2], [2.6, 2-len], [2.6, 2],
+                            [3.5, 2-len], [3.6, 2-len], [3.5, 2-len], [3.5, 2], [3.6, 2-len], [3.6, 2],
+                            [1.5, 2-len], [1.6, 2-len], [1.5, 2-len], [1.5, 2], [1.6, 2-len], [1.6, 2],
                            ])
             cond0 = self.is_lateral_boundary(p, bd0)
             cond1 = (bm.abs(p[..., 1]) < self.eps) | (bm.abs(p[..., 1] - 2.0) < self.eps)
@@ -662,7 +677,6 @@ class WPRLFEMModel(ComputationalModel):
             isBdDof = bm.zeros(self.n_A, dtype=bm.bool)
             isBdDof = bm.set_at(isBdDof, index_dof, True)
             uh = bm.set_at(uh, (..., isBdDof), val)
-
         BdDof = bm.concat([BdDof[1], BdDof[0]], axis=0)
         F = F - op @ uh # 5000w ~ 400MB
         F = bm.set_at(F, BdDof, uh[BdDof])
@@ -795,8 +809,6 @@ class WPRLFEMModel(ComputationalModel):
                      + sp.kron(Mx_i[j]@Axi[j]@Mx_i[j].T, Bz@Mz@Bz.T) \
                      + sp.kron(Mx_i[j]@Mxi[j]@Mx_i[j].T, Bz@Az@Bz.T)
                 self.auxMat[j]['Su0'] = self.A0i[j].assembly()
-            # Ai[j] = self.from_scipy(Ai[j])
-            # Bi[j] = self.from_scipy(Bi[j])
         
         # self.P_u = P_u
         # self.P_p = P_p
@@ -810,8 +822,9 @@ class WPRLFEMModel(ComputationalModel):
         self.Nu = Nu
         self.Np = Np
         # self.auxMat = auxMat
-        self.bigAi = (sp.bmat([[self.Ai[0].assembly(), self.Bti[0].assembly()],[self.Bi[0].assembly(), None]]).tocsr())
-            
+        bigAi = sp.bmat([[self.Ai[0].assembly(), self.Bti[0].assembly()],[self.Bi[0].assembly(), None]], format='csr')
+        self.bigAi = bigAi
+
     def vcycle(self, ru, rp, J=None):
         if J is None:
             J = self.level - 1
@@ -1026,10 +1039,6 @@ class WPRLFEMModel(ComputationalModel):
         start = time.time()
         op0, A, F = self.linear_system()
         self.logger.info(f'Step 1. 完成初步线性系统组装\n')
-        op, F1, BdDof = self.apply_bc(op0, bm.copy(F))
-        del op0
-        gc.collect()
-        self.logger.info(f'Step 2. 完成边界自由度处理\n')
 
         import time
         start = time.time()
@@ -1043,26 +1052,31 @@ class WPRLFEMModel(ComputationalModel):
                 method='interp'
             )
             A, F2 = BC.apply(A, F)
-            print(f'开始求解')
+            self.logger.info(f'Step 2. 完成边界自由度处理\n')
+            self.logger.info(f'Step 3. 开始使用直接法求解\n')
             tmr = timer()
             next(tmr)
             x = spsolve(A.to_scipy(), F2)
             # x = self.solve['direct'](op, F1)
+            print(x.max(), x.min())
             tmr.send(f'求解器时间')
             next(tmr)
             
-        elif self.solver == 'mg':
-            
+        elif self.solver == 'mg':           
+            op, F1, BdDof = self.apply_bc(op0, bm.copy(F))
+            del op0
+            gc.collect()
+            self.logger.info(f'Step 2. 完成边界自由度处理\n')
             bd_flag = bm.zeros((len(F),), dtype=bm.bool)
             bm.set_at(bd_flag, BdDof, True)
             self.logger.info(f'Step 3. 开始多重网格setup阶段\n')
             self.initial_assembly_time += time.time() - start
             x_in = self.solve['mg'](op, F1[~bd_flag])
             x = bm.set_at(F1, ~bd_flag, x_in)
-        
+            print(x.max(), x.min())
         uh = x[:3*self.ugdof]
         ph = x[3*self.ugdof:]
-        print(ph.max(),uh.max())
+        # print(ph.max(),uh.max())
         self.post_process(uh ,ph)
         return uh, ph
     
