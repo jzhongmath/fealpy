@@ -11,6 +11,8 @@ from scipy.sparse import diags
 from ..solver import spsolve, cg, minres, gmres, lgmres, bicg, bicgstab
 from ..solver.direct import _cupy_spsolve_triangular
 
+from scipy.sparse import block_diag
+from petsc4py import PETSc
 import time
 
 class StokesLSCDGS():
@@ -24,7 +26,7 @@ class StokesLSCDGS():
         self.smoothingstep = smootherOpt.get('smoothingstep', 2)
         self.smoothingSp = smootherOpt.get('smoothingSp', 'SGS')
         self.smoothingbarSp = smootherOpt.get('smoothingbarSp', 'SGS')
-        self.smoothingbarSpPara = smootherOpt.get('smoothingbarSpPara', 1.3)
+        self.smoothingbarSpPara = smootherOpt.get('smoothingbarSpPara', 1)
         if (self.smoothingbarSp == 'VCYCLE') or (self.smoothingSp == 'VCYCLE'):
             self.optionmg = {
                 'solvermaxit': 1,
@@ -35,7 +37,7 @@ class StokesLSCDGS():
             }
         
         self.Bt = auxMat.get('Bt')
-        # self.BBt = auxMat.get('BBt')
+        self.BBt = auxMat.get('BBt')
         self.BABt = auxMat.get('BABt')
         # self.Su = auxMat.get('Su')
         self.Su0 = auxMat.get('Su0')
@@ -51,43 +53,34 @@ class StokesLSCDGS():
     def run(self, u,p,f,g,A,B,SGS_time,MUL_time):
         for _ in range(self.smoothingstep):
             # Step 1: relax Momentum eqns
+            n = len(f) // 3
             start = time.time()
-            r = (f - self.Bt @ p - A @ u)
+            # import ipdb;ipdb.set_trace()
+            # r = (f - self.Bt @ p - A @ u)
+            r = (f - self.Bt @ p)
+            r[:n] -= A @ u[:n]
+            r[n:2*n] -= A @ u[n:2*n]
+            r[2*n:3*n] -= A @ u[2*n:3*n]
             MUL_time += time.time() - start
             start = time.time()
 
-            # import ipdb;ipdb.set_trace()
-            # u = u + spsolve_triangular(self.Su, r)
-            n = len(r) // 3
-            # u += tfqmr(self.Su, r, maxiter=3)[0]
-            # u[n:] = u[n:] + tfqmr(self.Su, r[n:], maxiter=3)[0]
-            # import ipdb;ipdb.set_trace()
-            # import scipy.sparse.linalg as spla
-            # du0 = spla.cg(self.Su0[0], r[:n], maxiter=1, M=self.Su0[1])
-            # du1 = spla.cg(self.Su0[0], r[n:2*n], maxiter=1, M=self.Su0[1])
-            # du2 = spla.cg(self.Su0[0], r[2*n:3*n], maxiter=1, M=self.Su0[1])
-            # du = (self.Su0 @ r.reshape(-1,3,order='F')).reshape(-1,order='F')
-            # import ipdb;ipdb.set_trace()
-            du = spsolve_triangular(self.Su0, r.reshape(-1,3,order='F')).reshape(-1,order='F')
-            u += du
-            # import ipdb;ipdb.set_trace()
-            # u[:n] += du0[0]
-            # u[n:2*n] += du1[0]
-            # u[2*n:] += du2[0]
+            
+            du = spsolve_triangular(self.Su0, r.reshape(-1,3,order='F'))
+            # u += du
+            u[:n] += du[:,0]
+            u[n:2*n] += du[:,1]
+            u[2*n:] += du[:,2]
             SGS_time += time.time() - start
             # Step 2: relax transformed Continuity eqns
             start = time.time()
             rp = g - B @ u
-            MUL_time += time.time() - start
+            # MUL_time += time.time() - start
             start = time.time()
             
             if self.smoothingSp == 'SGS':
                 b0 = spsolve_triangular(self.invSp, rp)
                 dq = spsolve_triangular(self.Spt, b0, lower=False)
-
             elif self.smoothingSp == 'GS':
-                # dq = bicgstab(self.Sp, rp, rtol=1e-4)[0]
-                # dq = tfqmr(self.Sp, rp, rtol=1e-1)[0]
                 dq = spsolve_triangular(self.Sp, rp)
             elif self.smoothingSp == 'VCYCLE':
                 pass
@@ -97,7 +90,7 @@ class StokesLSCDGS():
             start = time.time()
             u = u + self.Bt @ dq
             dq = self.BABt @ dq
-            MUL_time += time.time() - start
+            # MUL_time += time.time() - start
             
             start = time.time()
             if self.smoothingbarSp == 'SGS':
@@ -105,7 +98,6 @@ class StokesLSCDGS():
                 dp = spsolve_triangular(self.Sp, b1)
             elif self.smoothingbarSp == 'GS':
                 dp = spsolve_triangular(self.Spt, dq, lower=False)
-                # dp = tfqmr(self.Spt, dq, maxiter=3)[0]
             elif self.smoothingbarSp == 'VCYCLE':
                 pass
             # SGS_time += time.time() - start

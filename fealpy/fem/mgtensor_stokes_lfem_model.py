@@ -19,6 +19,9 @@ from fealpy.utils import timer
 
 import scipy.sparse as sp
 import scipy.sparse.linalg as lg
+
+from petsc4py import PETSc
+
 import time
 import gc
 
@@ -38,6 +41,14 @@ import gc
     (2) BB^T, tril(BB^T), triu(BB^T), BAB^T: 储存每层三维矩阵.
     (3) Bt: Operator
 """
+
+def csr_to_petsc_mat(csr):
+    nrows, ncols = csr.shape
+    mat = PETSc.Mat().createAIJ(size=(nrows, ncols),
+                        csr=(csr.indptr, csr.indices, csr.data))
+    mat.assemble()
+    return mat
+
 
 class SumOperator:
     def __init__(self, *ops):
@@ -181,17 +192,18 @@ class A0iOperator(LinearOperator):
 
     def set_up(self):
         pass
-
+    
+    @variantmethod('direct')
     def assembly(self):
-        A0_dense = sp.kron(sp.tril(A=self.Ax, k=-1), self.Mz, format='csr') + \
+        A0 = sp.kron(sp.tril(A=self.Ax, k=-1), self.Mz, format='csr') + \
              sp.kron(sp.tril(A=self.Mx, k=-1), self.Az, format='csr') + \
              sp.kron(sp.diags(self.Ax.diagonal()), sp.tril(A=self.Mz), format='csr') + \
              sp.kron(sp.diags(self.Mx.diagonal()), sp.tril(A=self.Az), format='csr')
-
-        # A0_dense = A0 + A1 + A2 + A3
+        
+        # A0 = sp.block_diag([A0,A0,A0], format='csr')
         # A0_dense = sp.kron(self.Ax, self.Mz) + sp.kron(self.Mx, self.Az)
-        return A0_dense
-    
+        return A0
+
     def __matmul__(self, x):
         v = bm.copy(x)
         X = bm.reshape(v, (self.n0, self.m1))
@@ -597,23 +609,23 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         print(f'自由度个数: {Ax.shape[0]*Mz.shape[0]*3+Bx.shape[1]*Mz_.shape[1]}')
         op = StokesOperator(Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_)
        
-        A1 = sp.kron(Ax, Mz) + \
-             sp.kron(Mx, Az)
-        B0 = sp.kron(Bx, Mz_)
-        B1 = sp.kron(Mx_, Bz)
+        # A1 = sp.kron(Ax, Mz) + \
+        #      sp.kron(Mx, Az)
+        # B0 = sp.kron(Bx, Mz_)
+        # B1 = sp.kron(Mx_, Bz)
         
-        A0 = sp.block_diag((A1, A1, A1))
-        B = sp.bmat([[B0, B1]])
-        A = sp.bmat([[A0, B.T],
-                     [B, None]])
+        # A0 = sp.block_diag((A1, A1, A1))
+        # B = sp.bmat([[B0, B1]])
+        # A = sp.bmat([[A0, B.T],
+        #              [B, None]])
 
-        from fealpy.sparse import COOTensor
-        A = COOTensor(
-            indices=bm.stack([A.row, A.col], axis=0),
-            values=A.data,
-            spshape=A.shape
-        )
-        # A = None
+        # from fealpy.sparse import COOTensor
+        # A = COOTensor(
+        #     indices=bm.stack([A.row, A.col], axis=0),
+        #     values=A.data,
+        #     spshape=A.shape
+        # )
+        A = None
         self.n_A = op.n_A
         self.n_p = op.n_p
         self.x0 = bm.zeros((self.n_A,), dtype=bm.float64)
@@ -709,7 +721,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         op.set_up()
 
         return op, F, BdDof
-
+       
     def setup(self, op: StokesOperator):
         """Compute restriction and interpolation operators.
         """
@@ -780,27 +792,16 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             
             if j > 0:
                 BBt = sp.kron(Bxi[j]@Bxi[j].T, Mz_@Mz_.T) + sp.kron(Mx_i[j]@Mx_i[j].T, Bz@Bz.T)
-
                 # Su = sp.tril(A0)
                 Sp = sp.tril(BBt).tocsr()
                 Spt = sp.triu(BBt).tocsr()
-                # DSp = BBt.diagonal()
                 DSp = sp.diags_array(1/BBt.diagonal())
-                # Bt = self.from_scipy(Bt)
-                # BBt = self.from_scipy(BBt.tocoo()).tocsr()
-                # BABt = self.from_scipy(BABt.tocoo()).tocsr()
-
-                # Spt = self.from_scipy(Spt)
-                # Sp = self.from_scipy(Sp)
-                # DSp = bm.tensor(DSp)
 
                 self.auxMat[j] = {
                     'Bt': self.Bti[j],
                     'BBt': BBt,
-                    # 'Su': Su.tocsr(),
                     'Spt': Spt,
                     'Sp': Sp,
-                    # 'DSp': DSp,
                     'invSpt': Spt @ DSp,
                     'invSp': Sp @ DSp
                 }
@@ -809,24 +810,39 @@ class MGTensorStokesLFEMModel(ComputationalModel):
                      + sp.kron(Bxi[j]@sp.block_diag((Mxi[j], Mxi[j]))@Bxi[j].T, Mz_@Az@Mz_.T) \
                      + sp.kron(Mx_i[j]@Axi[j]@Mx_i[j].T, Bz@Mz@Bz.T) \
                      + sp.kron(Mx_i[j]@Mxi[j]@Mx_i[j].T, Bz@Az@Bz.T)
-                self.auxMat[j]['Su0'] = self.A0i[j].assembly()
-            # Ai[j] = self.from_scipy(Ai[j])
-            # Bi[j] = self.from_scipy(Bi[j])
-        
-        # self.P_u = P_u
-        # self.P_p = P_p
-        # self.R_u = R_u
-        # self.R_p = R_p
 
-        # self.A0i = A0i
-        # self.Ai = Ai
-        # self.Bi = Bi
-        # self.Bti = Bti
+                self.auxMat[j]['Su0'] = self.A0i[j].assembly()
+        
         self.Nu = Nu
         self.Np = Np
-        # self.auxMat = auxMat
-        self.bigAi = (sp.bmat([[self.Ai[0].assembly(), self.Bti[0].assembly()],[self.Bi[0].assembly(), None]]).tocsr())
-            
+        self.coarse_dof = self.Ai[0].shape[0] + self.Bi[0].shape[0]
+        case = 1
+
+        if case == 0:
+            self.bigAi = (self.Ai[0].assembly(), self.Bti[0].assembly(), self.Bi[0].assembly())
+        
+        A = self.Ai[0].assembly().tocsr().astype(bm.float64)
+        Bt = self.Bti[0].assembly().tocsr().astype(bm.float64)
+        B = self.Bi[0].assembly().tocsr().astype(bm.float64)
+
+        A = csr_to_petsc_mat(A)
+        Bt = csr_to_petsc_mat(Bt)
+        B = csr_to_petsc_mat(B)
+        
+        M = PETSc.Mat().createNest([[A, Bt],
+                            [B, None]])
+        M.assemble()
+
+        ksp = PETSc.KSP().create()
+        ksp.setOperators(M)
+        ksp.setType('preonly') 
+        ksp.getPC().setType('lu')
+
+        # ksp.setUp()
+        ksp.setFromOptions()
+
+        self.bigAi = ksp
+
     def vcycle(self, ru, rp, J=None):
         if J is None:
             J = self.level - 1
@@ -834,7 +850,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             start = time.time()
             r = bm.concat([ru, rp], axis=0)
             n = len(rp)
-            e = spsolve(self.bigAi, r)
+            e = self.solve(self.bigAi, r)
             self.coarse_count += 1
             self.coarse_time += time.time() - start
             return e[:-n], e[-n:]
@@ -845,8 +861,6 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         R_p = self.R_p[J-1] 
 
         start = time.time()
-        # import ipdb;ipdb.set_trace()
-        # self.auxMat[J]['Su0'] = self.A0i[J].assembly()
         self.assembly_time += time.time() - start
         # pre-smoothing
         eu, ep = self.smoothing(bm.zeros((3*self.Nu[J],), dtype=bm.float64),
@@ -934,21 +948,43 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         """
         auxMat = self.auxMat[J]
         smootherOpt = self.options
-        A = self.Ai[J]
+        A = self.A0i[J]
         B = self.Bi[J]
         start = time.time()
         smoother = StokesLSCDGS(auxMat,smootherOpt)
         u, p, self.SGS_time, self.MUL_time = smoother.run(u,p,f,g,A,B,self.SGS_time,self.MUL_time)
         t = time.time() - start
-        print(t)
+        print(t,'hh')
         self.smoothing_time += t
         self.smoothing_count += 1
         return u, p    
     
     @variantmethod('direct')
-    def solve(self, op: StokesOperator, F, solver='mumps'):
+    def solve(self, bigA, F, solver='mumps'):
         """
         Solve the linear system using direct method.
+        """
+        case = 1
+        ksp = self.bigAi
+        
+        if case == 0:
+            x = spsolve(ksp, F)
+            return x
+
+        from petsc4py import PETSc
+        rhs = PETSc.Vec().createSeq(len(F))
+        rhs.setArray(F)
+        rhs.assemble()
+
+        x = PETSc.Vec().createSeq(len(F))
+        ksp.solve(rhs, x)
+
+        return x.getArray()
+
+    @solve.register('op')
+    def solve(self, op: StokesOperator, F, solver='mumps'):
+        """
+        Solve the linear system using op method.
         """
         # from scipy.sparse.linalg import bicgstab, minres, gmres, cg, LinearOperator
         from fealpy.solver import bicgstab, minres, gmres, cg
@@ -1008,7 +1044,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             f"err = {max(err[-1]):8.4e},  "
             f"level = {self.level},   "
             f"total dof: {self.total_dof:2.0f},   "
-            f"coarse dof: {self.bigAi.shape[0]:2.0f}\n\n"
+            f"coarse dof: {self.coarse_dof:2.0f}\n\n"
             f"total time in coarsest grid: {self.coarse_time}\n"
             f"total time in SGS: {self.SGS_time}\n"
             f"total time in MUL of smoothing: {self.MUL_time}\n"

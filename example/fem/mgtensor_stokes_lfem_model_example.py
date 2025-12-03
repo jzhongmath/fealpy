@@ -97,7 +97,13 @@ import gmsh
 options = vars(parser.parse_args())
 
 # bm.set_backend('pytorch')
-bm.set_backend('numpy'); options['lc'] = 0.2/2
+# 0.087  16 124s -> 88s
+# 0.072  22 
+# 0.046  54
+# 0.0419 64
+#
+bm.set_backend('numpy'); options['lc'] = 0.087/2
+
 # bm.set_default_device('cuda')
 
 gmsh.initialize()
@@ -111,7 +117,7 @@ gmsh.finalize()
 n = options['n']
 level = options['level']
 # imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=2*(level - 1)*n)
-imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=3)
+imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=8)
 
 
 model = MGTensorStokesLFEMModel(options=options)
