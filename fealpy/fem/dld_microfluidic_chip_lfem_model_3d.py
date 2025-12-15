@@ -97,8 +97,8 @@ class DLDMicrofluidicChipLFEMModel3D(ComputationalModel):
             y = p[..., 1]
             z = p[..., 2]
             result = bm.zeros(p.shape, dtype=bm.float64)
-            # result[..., 0] = 10**2 *y * (1-y) * z * (0.1-z)
-            result[..., 0] = y * (1-y) 
+            result[..., 0] = 10**2 *y * (1-y) * z * (0.1-z)
+            # result[..., 0] = y * (1-y) 
             result[..., 1] = bm.array(0.0)
             return result
         
@@ -304,6 +304,7 @@ class DLDMicrofluidicChipLFEMModel3D(ComputationalModel):
         # ax.quiver(points[:,0], points[:,1], uh[:,0], uh[:,1])
         # ax.set_title("Velocity field")
         # plt.show()
+        print(ph.max(),uh.max())
         self.mesh.nodedata['ph'] = ph
         self.mesh.nodedata['uh'] = uh.reshape(3,-1).T
         self.mesh.to_vtk('dld_tet_chip_3d.vtu')

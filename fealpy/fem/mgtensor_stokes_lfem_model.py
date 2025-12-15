@@ -185,6 +185,8 @@ class A0iOperator(LinearOperator):
         self.Mx = Mx
         self.Mz = Mz
         self.Az = Az
+        self.bigMz = sp.block_diag([Mz, Mz, Mz])
+        self.bigAz = sp.block_diag([Az, Az, Az])
 
         self.m0, self.n0 = Ax.shape
         self.m1, self.n1 = Mz.shape
@@ -204,13 +206,28 @@ class A0iOperator(LinearOperator):
         # A0_dense = sp.kron(self.Ax, self.Mz) + sp.kron(self.Mx, self.Az)
         return A0
 
+    # update
     def __matmul__(self, x):
+        n = len(x) // 3
         v = bm.copy(x)
-        X = bm.reshape(v, (self.n0, self.m1))
-        Y = self.Ax @ X @ self.Mz + self.Mx @ X @ self.Az
-        Y = Y.ravel()
-        return Y
-
+        # X = bm.reshape(v, (self.n0, self.m1))
+        # Y = self.Ax @ X @ self.Mz + self.Mx @ X @ self.Az
+        # Y = Y.ravel()
+        # U1 = bm.reshape(v[:n], (self.n0, self.m1))
+        # U2 = bm.reshape(v[n:2*n], (self.n0, self.m1))
+        # U3 = bm.reshape(v[2*n:3*n], (self.n0, self.m1))
+        # U = bm.concat([U1,U2,U3], axis=1)
+        n = len(x) // 3
+        v = bm.copy(x)
+        # 直接计算每个块，避免构建大矩阵 U 和 full matrix multiplication
+        Y1 = self.Ax @ (bm.reshape(v[:n], (self.n0, self.m1)) @ self.Mz) + self.Mx @ (bm.reshape(v[:n], (self.n0, self.m1)) @ self.Az)
+        Y2 = self.Ax @ (bm.reshape(v[n:2*n], (self.n0, self.m1)) @ self.Mz) + self.Mx @ (bm.reshape(v[n:2*n], (self.n0, self.m1)) @ self.Az)
+        Y3 = self.Ax @ (bm.reshape(v[2*n:3*n], (self.n0, self.m1)) @ self.Mz) + self.Mx @ (bm.reshape(v[2*n:3*n], (self.n0, self.m1)) @ self.Az)
+        return [Y1.ravel(), Y2.ravel(), Y3.ravel()]
+        # y = ([Y[:,:self.m1].ravel(),
+        #                Y[:,self.m1:2*self.m1].ravel(),
+        #                Y[:,2*self.m1:3*self.m1].ravel()])
+        return y
 
 class AiOperator(LinearOperator):
     def __init__(self, Ax, Mx, Mz, Az):

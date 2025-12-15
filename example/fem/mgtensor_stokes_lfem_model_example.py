@@ -23,11 +23,11 @@ parser.add_argument('--chip_height',
     help = "Height of the microfluidic chip.")
 
 parser.add_argument('--inlet_length',
-    default = 0.1, type = float,
+    default = 0, type = float,
     help = "Length of the inlet section.")
 
 parser.add_argument('--outlet_length',
-    default = 0.1, type = float,
+    default = 0, type = float,
     help = "Length of the outlet section.")
 
 parser.add_argument('--radius',
@@ -71,7 +71,7 @@ parser.add_argument('--n',
         help='Degree of Lagrange finite element space, default is 2.')
 
 parser.add_argument('--level',
-        default=4, type=int,
+        default=3, type=int,
         help='Degree of Lagrange finite element space, default is 2.')
 
 parser.add_argument('--pbar_log',
@@ -102,7 +102,7 @@ options = vars(parser.parse_args())
 # 0.046  54
 # 0.0419 64
 #
-bm.set_backend('numpy'); options['lc'] = 0.087/2
+bm.set_backend('numpy'); options['lc'] = 0.03/2
 
 # bm.set_default_device('cuda')
 
@@ -111,7 +111,7 @@ modeler = DLDMicrofluidicChipModeler(options)
 modeler.build(gmsh)
 mesher = DLDMicrofluidicChipMesher(options)
 mesher.generate(modeler, gmsh)
-# gmsh.fltk.run()
+gmsh.fltk.run()
 gmsh.finalize()
 
 n = options['n']

@@ -40,15 +40,15 @@ class LinearOperator:
 
 class KronOperator(LinearOperator):
     def __init__(self, A, B):
-        self.A = A
-        self.B = B
+        self.A = A.to_scipy()
+        self.B = B.to_scipy()
         self.m0, self.n0 = A.shape
         self.m1, self.n1 = B.shape
         self.shape = (self.m0*self.m1, self.n0*self.n1)
 
     def __matmul__(self, x):
         X = bm.reshape(x, (self.n0, self.m1))
-        Y = self.A.to_scipy() @ X @ self.B.to_scipy()
+        Y = self.A @ X @ self.B
         Y = Y.ravel()
         return Y
 
@@ -240,7 +240,14 @@ class MGTensorPossionLFEMModel(ComputationalModel):
             )
 
             self.B.append(B)
-            
+            import ipdb;ipdb.set_trace()
+            self.A[-1]
+    
+    def coarse_solve(self, r):
+        
+        pass
+
+
     def vcycle(self, r, J=None):
         """solve equations Ae = r in each level  
         """ 
@@ -263,8 +270,8 @@ class MGTensorPossionLFEMModel(ComputationalModel):
 
         # 粗网格求解
         if self.coarsegridsolver == 'direct':
-            ei[-1] = cg(self.A[-1], ri[-1], maxit=1000, atol=1e-9, rtol=1e-9)
-            
+            ei[-1] = self.coarse_solve(ri[-1])
+            # ei[-1] = self.coarse_solve(self.A[-1], ri[-1], maxit=1000, atol=1e-9, rtol=1e-9)
         else:
             pass
         
@@ -390,5 +397,4 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         err = bm.sqrt(bm.mean((self.pde.solution(self.node) - self.uh)**2))
         return err
     
-
 

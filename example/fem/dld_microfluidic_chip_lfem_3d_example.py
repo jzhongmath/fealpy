@@ -25,11 +25,11 @@ parser.add_argument('--chip_height',
     help = "Height of the microfluidic chip.")
 
 parser.add_argument('--inlet_length',
-    default = 0.1, type = float,
+    default = 0, type = float,
     help = "Length of the inlet section.")
 
 parser.add_argument('--outlet_length',
-    default = 0.1, type = float,
+    default = 0, type = float,
     help = "Length of the outlet section.")
 
 parser.add_argument('--radius',
@@ -45,19 +45,19 @@ parser.add_argument('--n_cols',
     help = "Number of columns of pillars in each stage.")
 
 parser.add_argument('--tan_angle',
-    default = 1/7, type = float,
+    default = 0, type = float,
     help = "Tangent of the deflection angle.")
 
 parser.add_argument('--n_stages',
-    default = 2, type = int,
+    default = 1, type = int,
     help = "Number of stages (or periods) in the chip.")
 
 parser.add_argument('--stage_length',
-    default = 7, type = float,
+    default = 1, type = float,
     help = "Number of stages (or periods) in the chip.")
 
 parser.add_argument('--lc',
-    default = 0.15, type = float,
+    default = 0.015, type = float,
     help = "Grid size for meshing.")
 
 parser.add_argument('--show_figure',
@@ -96,8 +96,8 @@ modeler = DLDMicrofluidicChipModeler3D(options)
 modeler.build(gmsh)
 mesher = DLDMicrofluidicChipMesher3D(options)
 mesher.generate(modeler, gmsh)
-gmsh.fltk.run()
-gmsh.finalize()
+# gmsh.fltk.run()
+# gmsh.finalize()
 
 model = DLDMicrofluidicChipLFEMModel3D(options)
 model.set_init_mesher(mesher)
