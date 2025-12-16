@@ -64,10 +64,16 @@ class Exp0001(BoxMesher3d):
         return self.solution(p)
 
     @cartesian
-    def is_dirichlet_boundary(self, p: TensorLike) -> TensorLike:
+    def is_dirichlet_boundary(self, p: TensorLike, dim=3) -> TensorLike:
         """Check if point is on boundary."""
         x, y, z = p[..., 0], p[..., 1], p[..., 2]
         atol = 1e-12
+
+        if dim == 2:
+            return (
+            (bm.abs(x - 1.0) < atol) | (bm.abs(x) < atol) |
+            (bm.abs(y - 1.0) < atol) | (bm.abs(y) < atol) 
+        )
         return (
             (bm.abs(x - 1.0) < atol) | (bm.abs(x) < atol) |
             (bm.abs(y - 1.0) < atol) | (bm.abs(y) < atol) |

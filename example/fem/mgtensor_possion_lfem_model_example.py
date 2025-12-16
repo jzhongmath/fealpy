@@ -17,7 +17,7 @@ parser.add_argument('--backend',
         help="默认后端为 numpy. 还可以选择 pytorch, jax, tensorflow 等")
 
 parser.add_argument('--n',
-        default=20, type=int,
+        default=10, type=int,
         help='Degree of Lagrange finite element space, default is 2.')
 
 parser.add_argument('--level',

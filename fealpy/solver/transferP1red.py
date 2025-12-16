@@ -11,7 +11,10 @@ def indofP1(mesh: TriangleMesh, threshold=None, return_index=False, tensor_mesh=
 
     index_dof = bm.arange(len(points))[isDDof]
     bd_point = points[isDDof] 
-    flag = threshold(bd_point)
+    if tensor_mesh:
+        flag = threshold(bd_point, dim=2)
+    else:
+        flag = threshold(bd_point)
     index_dof = index_dof[flag]
 
     bd_flag = bm.zeros((len(points),), dtype=bm.bool)
