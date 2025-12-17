@@ -23,6 +23,14 @@ import time
 import gc
 
 
+def csr_to_petsc_mat(csr):
+    nrows, ncols = csr.shape
+    mat = PETSc.Mat().createAIJ(size=(nrows, ncols),
+                        csr=(csr.indptr, csr.indices, csr.data))
+    mat.assemble()
+    return mat
+
+
 class SumOperator:
     def __init__(self, *ops):
         self.ops = ops
@@ -86,77 +94,6 @@ class PoissonOperator(LinearOperator):
         return Y
 
 
-class A0iOperator(LinearOperator):
-    def __init__(self, Ax, Mx, Mz, Az):
-        self.Ax = Ax
-        self.Mx = Mx
-        self.Mz = Mz
-        self.Az = Az
-        self.bigMz = sp.block_diag([Mz, Mz, Mz])
-        self.bigAz = sp.block_diag([Az, Az, Az])
-
-        self.m0, self.n0 = Ax.shape
-        self.m1, self.n1 = Mz.shape
-        self.shape = (self.m0*self.m1, self.n0*self.n1)
-
-    def set_up(self):
-        pass
-    
-    @variantmethod('direct')
-    def assembly(self):
-        A0 = sp.kron(sp.tril(A=self.Ax, k=-1), self.Mz, format='csr') + \
-             sp.kron(sp.tril(A=self.Mx, k=-1), self.Az, format='csr') + \
-             sp.kron(sp.diags(self.Ax.diagonal()), sp.tril(A=self.Mz), format='csr') + \
-             sp.kron(sp.diags(self.Mx.diagonal()), sp.tril(A=self.Az), format='csr')
-        
-        # A0 = sp.block_diag([A0,A0,A0], format='csr')
-        # A0_dense = sp.kron(self.Ax, self.Mz) + sp.kron(self.Mx, self.Az)
-        return A0
-
-    # update
-    def __matmul__(self, x):
-        n = len(x) // 3
-        v = bm.copy(x)
-        # 直接计算每个块，避免构建大矩阵 U 和 full matrix multiplication
-        Y1 = self.Ax @ (bm.reshape(v[:n], (self.n0, self.m1)) @ self.Mz) + self.Mx @ (bm.reshape(v[:n], (self.n0, self.m1)) @ self.Az)
-        Y2 = self.Ax @ (bm.reshape(v[n:2*n], (self.n0, self.m1)) @ self.Mz) + self.Mx @ (bm.reshape(v[n:2*n], (self.n0, self.m1)) @ self.Az)
-        Y3 = self.Ax @ (bm.reshape(v[2*n:3*n], (self.n0, self.m1)) @ self.Mz) + self.Mx @ (bm.reshape(v[2*n:3*n], (self.n0, self.m1)) @ self.Az)
-        return [Y1.ravel(), Y2.ravel(), Y3.ravel()]
-
-
-class AiOperator(LinearOperator):
-    def __init__(self, Ax, Mx, Mz, Az):
-        self.Ax = Ax
-        self.Mx = Mx
-        self.Mz = Mz
-        self.Az = Az
-
-        self.m0, self.n0 = Ax.shape
-        self.m1, self.n1 = Mz.shape
-        self.n_u0 = self.m0*self.m1
-        self.shape = (3*self.m0*self.m1, 3*self.n0*self.n1)
-
-    def set_up(self):
-        pass
-
-    def assembly(self):
-        A0_dense = sp.kron(self.Ax, self.Mz) + sp.kron(self.Mx, self.Az)
-        A_dense = sp.block_diag((A0_dense, A0_dense, A0_dense))
-        return A_dense
-    
-    def __matmul__(self, x):
-        v = bm.copy(x)
-        U1 = bm.reshape(v[:self.n_u0], (self.n0, self.m1))
-        U2 = bm.reshape(v[self.n_u0:2*self.n_u0], (self.n0, self.m1))
-        U3 = bm.reshape(v[2*self.n_u0:3*self.n_u0], (self.n0, self.m1))
-
-        Y1 = self.Ax @ U1 @ self.Mz + self.Mx @ U1 @ self.Az
-        Y2 = self.Ax @ U2 @ self.Mz + self.Mx @ U2 @ self.Az
-        Y3 = self.Ax @ U3 @ self.Mz + self.Mx @ U3 @ self.Az
-        Y = bm.concat([Y1.ravel(), Y2.ravel(), Y3.ravel()], axis=0)
-        return Y
-
-
 class MGTensorPossionLFEMModel(ComputationalModel):
     """"Multigrid solver for Poisson equations defined on 
             tensor-product grids using the Linear Finite Element Method (LFEM).
@@ -182,8 +119,11 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         self.preconditioner = options.get('preconditioner', 'none')
         self.coarsegridsolver = options.get('coarsegridsolver', 'direct')
         self.smoother = options.get('smoother', 'LINE')
-    
+
+        self.setup_time = 0
         self.coarse_time = 0
+        self.smoothing_time = 0
+        self.MUL_time = 0
 
     def set_pde(self, pde: Union[MGTensorPossionPDEDataT, str, int]):
         """
@@ -325,15 +265,27 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         Iz = spdiags(bm.ones((op.n_Mz,)), 0, op.n_Mz, op.n_Mz).to_scipy()
         
         for j in range(self.level):
-            self.Ai[j] = PoissonOperator(Axi[j], Mxi[j], Mz, Az)
+            self.Ai[j] = PoissonOperator(Axi[j], Mxi[j], Az, Mz)
             self.Bi[j] = sp.kron(sp.diags(Axi[j].diagonal()), Mz) + \
                         sp.kron(sp.diags(Mxi[j].diagonal()), Az)
             # self.Li[j] = lg.splu(self.Bi[j], )
             if j < self.level - 1:
                 self.P[j] = KronOperator(P[j], Iz)
                 self.R[j] = KronOperator(P[j].T, Iz)
-        # import ipdb;ipdb.set_trace()
-        self.Ai[0] = self.Ai[0].assembly()
+
+        self.coarse_dof = self.Ai[0].shape[0]
+        A = self.Ai[0].assembly().tocsr().astype(bm.float64)
+        A = csr_to_petsc_mat(A)
+
+        ksp = PETSc.KSP().create()
+        ksp.setOperators(A)
+        ksp.setType('cg') 
+        ksp.getPC().setType('gamg')
+
+        ksp.setFromOptions()
+        ksp.setUp()
+
+        self.A0 = ksp
     
     def coarse_solve(self, r):
         
@@ -348,28 +300,42 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         ri = [None] * J
         ei = [None] * J
         ri[-1] = r
-
+        
         for i in range(J-1,0,-1):
             ei[i] = self.linesmoother(ri[i], i)
 
             for _ in range(self.mu):
-                ei[i] += self.linesmoother(ri[i] - self.Ai[i] @ ei[i], i)
+                start = time.time()
+                ra = ri[i] - self.Ai[i] @ ei[i]
+                self.MUL_time += time.time() - start
+
+                ei[i] += self.linesmoother(ra, i)
             
+            start = time.time()
             ri[i-1] = self.R[i-1] @ (ri[i] - self.Ai[i] @ ei[i])
+            self.MUL_time += time.time() - start
 
         if self.coarsegridsolver == 'direct':
             start = time.time()
-            ei[0] = self.solve(self.Ai[0], ri[0])
+            ei[0] = self.solve['pets'](ri[0])
             self.coarse_time += time.time() - start
         else:
             pass
         
-        for i in range(J-1):          
+        for i in range(J-1):    
+            start = time.time()      
             ei[i+1] += self.P[i] @ ei[i]
-            ei[i+1] += self.linesmoother(ri[i+1] - self.Ai[i+1] @ ei[i+1], i+1)
+            rb = ri[i+1] - self.Ai[i+1] @ ei[i+1]
+            self.coarse_time += time.time() - start
+
+            ei[i+1] += self.linesmoother(rb, i+1)
 
             for _ in range(self.mu):
-                ei[i+1] += self.linesmoother(ri[i+1] - self.Ai[i+1] @ ei[i+1], i+1)
+                start = time.time()
+                rc = ri[i+1] - self.Ai[i+1] @ ei[i+1]
+                self.coarse_time += time.time() - start
+
+                ei[i+1] += self.linesmoother(rc, i+1)
         
         return ei[-1]
 
@@ -406,27 +372,54 @@ class MGTensorPossionLFEMModel(ComputationalModel):
     def linesmoother(self, r, J):
         """Solve LUe = r.
         """
+        start = time.time()
         e = cg(self.Bi[J], r, maxit=100, atol=1e-6, rtol=1e-6)
-        # e = spsolve(self.B[J], r)
+        # e = spsolve(self.Bi[J], r)
         e = 0.75 * e
+        self.smoothing_time += time.time() - start
 
         return e
     
     @variantmethod('cg')
     def solve(self, A, F):
-        import ipdb;ipdb.set_trace()
         x, info = cg(A, F, maxit=1000, atol=1e-9, rtol=1e-9, returninfo=True)
-        print(info)
+        # x = spsolve(A, F)
+        # print(info)
         return x
     
+    @solve.register('pets')
+    def solve(self, F, case=1):
+        """
+        Solve the linear system using direct method.
+        """
+        case = 1
+        ksp = self.A0
+        
+        if case == 0:
+            x = spsolve(ksp, F)
+            return x
+
+        from petsc4py import PETSc
+        rhs = PETSc.Vec().createSeq(len(F))
+        rhs.setArray(F)
+        rhs.assemble()
+
+        x = PETSc.Vec().createSeq(len(F))
+        ksp.solve(rhs, x)
+
+        return x.getArray()
+
     @solve.register('mg')
     def solve(self, op: PoissonOperator, F):
         # initial set up
+        start = time.time()
         self.setup(op)
-        x = bm.zeros_like(len(F))
+        self.setup_time += time.time() - start
+        self.logger.info(f'Step 4. setup 完成\n')
 
         k = 0
         r = F
+        x = bm.zeros_like(len(F))
         nb = bm.linalg.norm(F)
         err = bm.zeros((self.maxIt, 2), dtype=bm.float64)
 
@@ -435,33 +428,51 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         else:
             err[0, :] = bm.linalg.norm(r)
 
+        self.logger.info(f'Step 5. 进入主循环迭代\n')
+
+        start = time.time()
         if self.cycle_type == 'VCYCLE':
-            print('Multigrid Vcycle Iteration \n')
+
             while (bm.max(err[k, :]) > self.tol) & (k <= self.maxIt):
                 k = k + 1
                 Br = self.vcycle(r)
                 x = x + Br
+
+                start0 = time.time()
                 r = r - op @ Br
                 err[k, 0] = bm.sqrt(bm.abs(Br.T @ r / (x.T @ F)))
                 err[k, 1] = bm.linalg.norm(r) / nb
+                self.MUL_time += time.time() - start0
 
                 print(
                     f'MG Vcycle iter: {k:2d},   '
                     f'err = {bm.max(err[k, :]):8.4e}'
                 )
-            err = err[:k, :]
+                
+            err = err[:k+1, :]
             itStep = k
 
         elif self.cycle_type == 'WCYCLE':
             pass
         
+        cost = time.time() - start
+        self.logger.info(f'Step 6. 程序结束, 开始输出打印结果\n')
+
         # Output
-        print(f"dof: {self.NxNy:2.0f},  "
-            f"level: {self.level:2.0f},  "
-            f"smoothing: {self.mu:2.0f},  "
-            f"iter: {itStep:2.0f},  "
+        print(f"iter: {itStep:2.0f},  "
             f"err = {max(err[-1]):8.4e},  "
-            f"coarse grid: {self.Ai[0].shape[0]:2.0f},  ")
+            f"level = {self.level},   "
+            f"total dof: {self.total_dof:2.0f},   "
+            f"coarse dof: {self.coarse_dof:2.0f}\n\n"
+            f"total time in coarsest grid: {self.coarse_time}\n"
+            f"total time in smoothing: {self.smoothing_time}\n"
+            f"total time in MUL of smoothing: {self.MUL_time}\n"
+            f"total time: {cost}\n\n"
+            f"粗网格总时间占比: {self.coarse_time / cost},  \n"
+            f"Smoothing总时间占比: {self.smoothing_time / cost},   \n"
+            f"稀疏矩阵@计算总时间占比: {self.MUL_time / cost},  \n",
+            f"粗网格和平滑总时间占比: {(self.coarse_time+self.smoothing_time+self.MUL_time) / cost},   \n"
+            f"setup时间: {self.setup_time},   \n")
 
         if k > self.maxIt:
             print("NOTE: the iterative method does not converge!")
@@ -502,8 +513,6 @@ class MGTensorPossionLFEMModel(ComputationalModel):
             x_in = self.solve['mg'](op, F1[~bd_flag])
             x = bm.set_at(F1, ~bd_flag, x_in)
         
-        print(x.max())
-        print(self.post_process(x))
         return x
     
     def post_process(self, x):

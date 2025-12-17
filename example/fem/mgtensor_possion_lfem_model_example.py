@@ -4,7 +4,7 @@ from fealpy.backend import bm
 from fealpy.mesh import TriangleMesh, IntervalMesh
 
 from fealpy.fem.mgtensor_possion_lfem_model import MGTensorPossionLFEMModel
-
+from fealpy.fem.backup.mgtensor_possion_lfem_model import MGTensorPossionLFEMModelOld
 
 ## 参数解析
 parser = argparse.ArgumentParser(description=
@@ -17,7 +17,7 @@ parser.add_argument('--backend',
         help="默认后端为 numpy. 还可以选择 pytorch, jax, tensorflow 等")
 
 parser.add_argument('--n',
-        default=10, type=int,
+        default=36, type=int,
         help='Degree of Lagrange finite element space, default is 2.')
 
 parser.add_argument('--level',
@@ -26,6 +26,11 @@ parser.add_argument('--level',
 
 options = vars(parser.parse_args())
 
+# 610, 23 s
+# 1000, 70 s
+# 1800, 120 s
+# 3500, 270 s
+# 4800, 400 s
 
 from fealpy.backend import bm
 
@@ -36,6 +41,8 @@ tmesh = TriangleMesh.from_box([0, 1, 0, 1], nx=n, ny=n)
 imesh = IntervalMesh.from_interval_domain([0, 1], nx=2*(level - 1)*n)
 
 model = MGTensorPossionLFEMModel(options=options)
+# model = MGTensorPossionLFEMModelOld(options=options)
+
 model.set_pde(1)
 model.set_mesh(tmesh, imesh)
 model.set_space_degree(1)

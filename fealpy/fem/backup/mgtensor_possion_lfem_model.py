@@ -53,7 +53,7 @@ class KronOperator(LinearOperator):
         return Y
 
 
-class MGTensorPossionLFEMModel(ComputationalModel):
+class MGTensorPossionLFEMModelOld(ComputationalModel):
     """"Multigrid solver for Poisson equations defined on 
             tensor-product grids using the Linear Finite Element Method (LFEM).
     """
@@ -240,7 +240,7 @@ class MGTensorPossionLFEMModel(ComputationalModel):
             )
 
             self.B.append(B)
-            import ipdb;ipdb.set_trace()
+            
             self.A[-1]
     
     def coarse_solve(self, r):
@@ -262,7 +262,7 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         # 粗化
         for i in range(J-1):
             ei[i] = self.linesmoother(ri[i], i)
-
+            import ipdb;ipdb.set_trace()
             for _ in range(self.mu):
                 ei[i] += self.linesmoother(ri[i] - self.A[i] @ ei[i], i)
 
