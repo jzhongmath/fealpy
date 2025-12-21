@@ -17,7 +17,7 @@ parser.add_argument('--backend',
         help="默认后端为 numpy. 还可以选择 pytorch, jax, tensorflow 等")
 
 parser.add_argument('--n',
-        default=36, type=int,
+        default=55, type=int,
         help='Degree of Lagrange finite element space, default is 2.')
 
 parser.add_argument('--level',
@@ -38,12 +38,13 @@ bm.set_backend(options['backend'])
 n = options['n']
 level = options['level']
 tmesh = TriangleMesh.from_box([0, 1, 0, 1], nx=n, ny=n)
-imesh = IntervalMesh.from_interval_domain([0, 1], nx=2*(level - 1)*n)
+# imesh = IntervalMesh.from_interval_domain([0, 1], nx=2*(level - 1)*n)
+imesh = IntervalMesh.from_interval_domain([0, 1], nx=20)
 
 model = MGTensorPossionLFEMModel(options=options)
 # model = MGTensorPossionLFEMModelOld(options=options)
 
-model.set_pde(1)
+model.set_pde(2)
 model.set_mesh(tmesh, imesh)
 model.set_space_degree(1)
 model.run()

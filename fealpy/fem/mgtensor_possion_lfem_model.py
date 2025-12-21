@@ -8,7 +8,7 @@ from fealpy.fem import ScalarDiffusionIntegrator, ScalarMassIntegrator, ScalarSo
 from fealpy.model import PDEModelManager, ComputationalModel
 from fealpy.model.mgtensor_possion import MGTensorPossionPDEDataT
 
-from fealpy.sparse import spdiags, coo_matrix, csr_matrix
+from fealpy.sparse import spdiags, coo_matrix, csr_matrix, COOTensor
 from fealpy.solver import cg, spsolve, transferP1red
 
 from fealpy.utils import timer
@@ -104,7 +104,8 @@ class MGTensorPossionLFEMModel(ComputationalModel):
 
         if options is None:
             options = {} 
-            
+        
+        self.q = 1
         self.level = options.get('level')
 
         self.options = options
@@ -146,9 +147,21 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         
         tnode = tmesh.entity('node')
         inode = imesh.entity('node')
-        
+        tcell = tmesh.entity('cell')
+
+        iNN = imesh.number_of_nodes()
+        tNC =tmesh.number_of_cells()
+
+        s0 = tmesh.entity_measure('cell')
+        s1 = imesh.entity_measure('cell')
+
+        self.cm = bm.einsum('i,j->ij', s1, s0).ravel()
         self.node = bm.concat([bm.repeat(tnode, inode.shape[0], axis=0), 
                           bm.tile(inode.T, tnode.shape[0]).T], axis=1)
+       
+        all_cell = iNN * tcell[None, :, :] + bm.arange(iNN)[:, None, None]
+        all_cell = all_cell.reshape(-1, tcell.shape[1])
+        self.cell = bm.concat([all_cell[:-tNC], all_cell[tNC:]], axis=1)
 
     def set_space_degree(self, p: int = 1) -> None:
         self.p = p
@@ -156,9 +169,9 @@ class MGTensorPossionLFEMModel(ComputationalModel):
     def linear_system(self):
         """
         """
-        from fealpy.mesh import TensorPrismMesh
-        self.mesh = TensorPrismMesh(self.tmesh, self.imesh)
-        self.space = LagrangeFESpace(self.mesh, p=1)
+        # from fealpy.mesh import TensorPrismMesh
+        # self.mesh = TensorPrismMesh(self.tmesh, self.imesh)
+        # self.space = LagrangeFESpace(self.mesh, p=1)
 
         p = self.p
         self.space0= LagrangeFESpace(self.tmesh, p=p)
@@ -183,20 +196,90 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         gdof = Ax.shape[0]*Mz.shape[0]
         print(f'自由度个数：{gdof}')
         op = PoissonOperator(Ax, Mx, Az, Mz)
-
-        A = (sp.kron(Ax, Mz) + sp.kron(Mx, Az)).tocoo()
-        from fealpy.sparse import COOTensor
-        A = COOTensor(
-            indices=bm.stack([A.row, A.col], axis=0),
-            values=A.data,
-            spshape=A.shape
-        )
-
-        # A = None
-        self.x0 = bm.zeros((gdof,), dtype=bm.float64)
-        F = bm.zeros((gdof,), dtype=bm.float64)
         self.total_dof = gdof
+        # A = (sp.kron(Ax, Mz) + sp.kron(Mx, Az)).tocoo()
+        # from fealpy.sparse import COOTensor
+        # A = COOTensor(
+        #     indices=bm.stack([A.row, A.col], axis=0),
+        #     values=A.data,
+        #     spshape=A.shape
+        # )
+
+        A = None
+        self.x0 = bm.zeros((gdof,), dtype=bm.float64)
+        F = self.assembly_F()
+        
         return op, A, F
+
+    @variantmethod('notsep')
+    def assembly_F(self):
+        """
+        Assembly F on tensor mesh.
+        """
+        from ..quadrature import (
+                GaussLegendreQuadrature, 
+                TensorProductQuadrature, 
+                TriangleQuadrature
+            )
+        
+        q = self.p + 3
+        qf0 = TriangleQuadrature(q)
+        qf1 = GaussLegendreQuadrature(q)
+
+        qf = TensorProductQuadrature((qf0, qf1))
+        # bcs: ((NQ0, 3), (NQ1, 2)), ws: (NQ0 * NQ1,)
+        bcs, ws = qf.get_quadrature_points_and_weights()
+
+        # compute basis
+        raw_phi = [bm.simplex_shape_function(bc, self.p) for bc in bcs] # ((NQ0, ldof0), (NQ1, ldof1))
+        phi = bm.tensorprod(*raw_phi)
+
+        # compute source
+        import ipdb;ipdb.set_trace()
+        points = bm.einsum('cld,ql->cqd', self.node[self.cell[:, [0,3,1,4,2,5]]], phi)
+        coef_val = self.pde.source(points)
+
+        # assembly, F: (gdof,)
+        group_tensor = bm.einsum('c, q, cql, cq -> cl', self.cm, ws, phi[None,:], coef_val)
+        F = bm.zeros((self.total_dof,),dtype=bm.float64)
+        bm.add_at(F, self.cell, group_tensor) # not set_at
+        
+        return F      
+
+    @assembly_F.register('sep')
+    def assembly_F(self):
+        """
+        Assembly F on tensor mesh.
+        """
+        from ..quadrature import (
+                GaussLegendreQuadrature, 
+                TensorProductQuadrature, 
+                TriangleQuadrature
+            )
+        
+        q = self.p + 3
+        qf0 = TriangleQuadrature(q)
+        qf1 = GaussLegendreQuadrature(q)
+
+        qf = TensorProductQuadrature((qf0, qf1))
+        # bcs: ((NQ0, 3), (NQ1, 2)), ws: (NQ0 * NQ1,)
+        bcs, ws = qf.get_quadrature_points_and_weights()
+
+        # compute basis
+        raw_phi = [bm.simplex_shape_function(bc, self.p) for bc in bcs] # ((NQ0, ldof0), (NQ1, ldof1))
+        phi = bm.tensorprod(*raw_phi)
+
+        # compute source
+        import ipdb;ipdb.set_trace()
+        points = bm.einsum('cld,ql->cqd', self.node[self.cell[:, [0,3,1,4,2,5]]], phi)
+        coef_val = self.pde.source(points)
+
+        # assembly, F: (gdof,)
+        group_tensor = bm.einsum('c, q, cql, cq -> cl', self.cm, ws, phi[None,:], coef_val)
+        F = bm.zeros((self.total_dof,),dtype=bm.float64)
+        bm.add_at(F, self.cell, group_tensor) # not set_at
+        
+        return F      
 
     def apply_bc(self, op: PoissonOperator, F):
         isDDof0 = self.space0.is_boundary_dof()
@@ -214,7 +297,7 @@ class MGTensorPossionLFEMModel(ComputationalModel):
 
         gd = gd(self.node[isBdDof])
         uh = bm.set_at(uh, (..., isBdDof), gd)
-    
+        # import ipdb;ipdb.set_trace()
         F = F - op @ uh # 5000w ~ 400MB
         F = bm.set_at(F, isBdDof, uh[isBdDof])
 
@@ -263,12 +346,10 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         self.bigAi = [None] * level
 
         Iz = spdiags(bm.ones((op.n_Mz,)), 0, op.n_Mz, op.n_Mz).to_scipy()
+        self.Bi = self.computeBi(Axi, Mxi, Az, Mz)      
         
         for j in range(self.level):
             self.Ai[j] = PoissonOperator(Axi[j], Mxi[j], Az, Mz)
-            self.Bi[j] = sp.kron(sp.diags(Axi[j].diagonal()), Mz) + \
-                        sp.kron(sp.diags(Mxi[j].diagonal()), Az)
-            # self.Li[j] = lg.splu(self.Bi[j], )
             if j < self.level - 1:
                 self.P[j] = KronOperator(P[j], Iz)
                 self.R[j] = KronOperator(P[j].T, Iz)
@@ -286,6 +367,30 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         ksp.setUp()
 
         self.A0 = ksp
+    
+    def computeBi(self, Axi, Mxi, Az, Mz):
+        # self.Bi[j] = sp.kron(sp.diags(Axi[j].diagonal()), Mz) + \
+        #                 sp.kron(sp.diags(Mxi[j].diagonal()), Az)
+        from scipy.linalg import cholesky, eigh
+        print('yes')
+        Az = Az.toarray()
+        Mz = Mz.toarray()
+        Bi = [None] * self.level
+
+        LA = cholesky(Az, lower=True)
+        LinV = bm.linalg.inv(LA)
+        C = LinV @ Mz @ LinV.T
+        
+        eigvals, Q = eigh(C)
+        V = LinV.T @ Q
+        
+        for i in range(self.level):
+            DA = Axi[i].diagonal()
+            DM = Mxi[i].diagonal()
+            Lambda = 1 / (DM[:,None] + DA[:,None] * eigvals[None,:]) # (Nx, Nz)
+            Bi[i] = V[None,...] @ (Lambda[:,:,None] * V.T[None,...]) # (Nx, Nz, Nz)
+            
+        return Bi
     
     def coarse_solve(self, r):
         
@@ -326,14 +431,14 @@ class MGTensorPossionLFEMModel(ComputationalModel):
             start = time.time()      
             ei[i+1] += self.P[i] @ ei[i]
             rb = ri[i+1] - self.Ai[i+1] @ ei[i+1]
-            self.coarse_time += time.time() - start
+            self.MUL_time += time.time() - start
 
             ei[i+1] += self.linesmoother(rb, i+1)
 
             for _ in range(self.mu):
                 start = time.time()
                 rc = ri[i+1] - self.Ai[i+1] @ ei[i+1]
-                self.coarse_time += time.time() - start
+                self.MUL_time += time.time() - start
 
                 ei[i+1] += self.linesmoother(rc, i+1)
         
@@ -373,9 +478,13 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         """Solve LUe = r.
         """
         start = time.time()
-        e = cg(self.Bi[J], r, maxit=100, atol=1e-6, rtol=1e-6)
-        # e = spsolve(self.Bi[J], r)
-        e = 0.75 * e
+        shape = self.Bi[J].shape
+        block_r = r.reshape(shape[0], shape[1])
+        block_e = 0.75 * bm.einsum('ijk,ik->ij', self.Bi[J], block_r)
+        e = block_e.ravel()
+
+        # e = cg(self.Bi[J], r, maxit=100, atol=1e-6, rtol=1e-6)
+        # e = 0.75 * e
         self.smoothing_time += time.time() - start
 
         return e
@@ -506,13 +615,16 @@ class MGTensorPossionLFEMModel(ComputationalModel):
             tmr.send(f'求解器时间')
             next(tmr)
             
-        elif self.solver == 'mg':            
+        elif self.solver == 'mg':         
             bd_flag = bm.zeros((len(F),), dtype=bm.bool)
             bm.set_at(bd_flag, BdDof, True)
             self.logger.info(f'Step 3. 开始多重网格setup阶段\n')
             x_in = self.solve['mg'](op, F1[~bd_flag])
             x = bm.set_at(F1, ~bd_flag, x_in)
         
+        err = self.post_process(x)
+        print(err)
+
         return x
     
     def post_process(self, x):

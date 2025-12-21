@@ -27,7 +27,8 @@ DATA_TABLE is a registry for MGTensor Possion PDE models.
 Each entry maps a model name to its corresponding module and class.
 """
 DATA_TABLE = {
-        1: ("exp0001", "Exp0001")
+        1: ("exp0001", "Exp0001"),
+        2: ("exp0002", "Exp0002")
 
 }
 
