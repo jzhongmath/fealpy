@@ -59,6 +59,20 @@ class Exp0002(BoxMesher3d):
         return 3 * pi**2 * bm.sin(pi * x) * bm.sin(pi * y) * bm.sin(pi * z)
 
     @cartesian
+    def sourcex(self, p: TensorLike) -> TensorLike:
+        """Compute exact source"""
+        x, y = p[..., 0], p[..., 1]
+        pi = bm.pi
+        return 3 * pi**2 * bm.sin(pi * x) * bm.sin(pi * y)
+
+    @cartesian
+    def sourcez(self, p: TensorLike) -> TensorLike:
+        """Compute exact source"""
+        z = p[..., -1]
+        pi = bm.pi
+        return bm.sin(pi * z)
+
+    @cartesian
     def dirichlet(self, p: TensorLike) -> TensorLike:
         """Dirichlet boundary condition"""
         return self.solution(p)
@@ -80,5 +94,3 @@ class Exp0002(BoxMesher3d):
             (bm.abs(z - 1.0) < atol) | (bm.abs(z) < atol)
         )
  
-        """Compute scaling function that satisfies the boundary conditions."""
-        return bm.zeros_like(p[..., 0])

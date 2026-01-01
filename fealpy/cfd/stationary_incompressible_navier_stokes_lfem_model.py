@@ -212,7 +212,7 @@ class StationaryIncompressibleNSLFEMModel(ComputationalModel):
     def solve(self, A, F, solver='scipy'):
         from fealpy.solver import spsolve
         self.solve_str = 'direct'
-        return spsolve(A, F, solver = solver)
+        return spsolve(A, F, solver = 'mumps')
 
         
     def error(self, uh, ph):

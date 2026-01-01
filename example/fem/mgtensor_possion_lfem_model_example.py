@@ -17,11 +17,11 @@ parser.add_argument('--backend',
         help="默认后端为 numpy. 还可以选择 pytorch, jax, tensorflow 等")
 
 parser.add_argument('--n',
-        default=55, type=int,
+        default=50, type=int,
         help='Degree of Lagrange finite element space, default is 2.')
 
 parser.add_argument('--level',
-        default=4, type=int,
+        default=3, type=int,
         help='Degree of Lagrange finite element space, default is 2.')
 
 options = vars(parser.parse_args())
@@ -38,8 +38,17 @@ bm.set_backend(options['backend'])
 n = options['n']
 level = options['level']
 tmesh = TriangleMesh.from_box([0, 1, 0, 1], nx=n, ny=n)
-# imesh = IntervalMesh.from_interval_domain([0, 1], nx=2*(level - 1)*n)
-imesh = IntervalMesh.from_interval_domain([0, 1], nx=20)
+# tmesh = TriangleMesh.from_one_triangle()
+# import matplotlib.pyplot as plt
+# fig = plt.figure()
+# axes = fig.add_subplot(111)
+# tmesh.add_plot(axes, cellcolor="#80e673")
+# # mesh.find_node(axes=axes, showindex=True, fontsize='20')
+# # mesh.find_cell(axes=axes, showindex=True, fontsize='20')
+# plt.show()
+
+imesh = IntervalMesh.from_interval_domain([0, 1], nx=2*(level - 1)*n)
+# imesh = IntervalMesh.from_interval_domain([0, 1], nx=20)
 
 model = MGTensorPossionLFEMModel(options=options)
 # model = MGTensorPossionLFEMModelOld(options=options)

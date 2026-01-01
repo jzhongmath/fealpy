@@ -24,7 +24,7 @@ def _mumps_solve(A, b):
         ```
     """
     from mumps import DMumpsContext
-    # A = A.to_scipy()
+    A = A.to_scipy()
     x = bm.to_numpy(b).copy()
 
     ctx = DMumpsContext()
@@ -50,7 +50,7 @@ def _scipy_solve(A, b):
     from scipy.sparse.linalg import spsolve as spsol 
     from scipy.sparse import csr_matrix
 
-    # A = A.to_scipy()
+    A = A.to_scipy()
     b = bm.to_numpy(b)
     return spsol(A, b)
 

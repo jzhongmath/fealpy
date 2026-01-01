@@ -204,10 +204,15 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         #     values=A.data,
         #     spshape=A.shape
         # )
-
+        
+        # form0 = LinearForm(self.space)
+        # SI0 = ScalarSourceIntegrator(self.pde.source)
+        # form0.add_integrator(SI0)
+        # F = form0.assembly()
+        
         A = None
         self.x0 = bm.zeros((gdof,), dtype=bm.float64)
-        F = self.assembly_F()
+        F = self.assembly_F['sep']()
         
         return op, A, F
 
@@ -235,14 +240,13 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         phi = bm.tensorprod(*raw_phi)
 
         # compute source
-        import ipdb;ipdb.set_trace()
         points = bm.einsum('cld,ql->cqd', self.node[self.cell[:, [0,3,1,4,2,5]]], phi)
         coef_val = self.pde.source(points)
 
         # assembly, F: (gdof,)
         group_tensor = bm.einsum('c, q, cql, cq -> cl', self.cm, ws, phi[None,:], coef_val)
         F = bm.zeros((self.total_dof,),dtype=bm.float64)
-        bm.add_at(F, self.cell, group_tensor) # not set_at
+        bm.add_at(F, self.cell[:, [0,3,1,4,2,5]], group_tensor) # not set_at
         
         return F      
 
@@ -251,35 +255,20 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         """
         Assembly F on tensor mesh.
         """
-        from ..quadrature import (
-                GaussLegendreQuadrature, 
-                TensorProductQuadrature, 
-                TriangleQuadrature
-            )
+        # assembly F_x
+        form0 = LinearForm(self.space0)
+        SI0 = ScalarSourceIntegrator(self.pde.sourcex)
+        form0.add_integrator(SI0)
+        Fx = form0.assembly()
+
+        # assembly F_z
+        form1 = LinearForm(self.space1)
+        SI1 = ScalarSourceIntegrator(self.pde.sourcez)
+        form1.add_integrator(SI1)
+        Fz = form1.assembly()
+        F = (Fx[:,None]*Fz[None,:]).reshape(-1)
         
-        q = self.p + 3
-        qf0 = TriangleQuadrature(q)
-        qf1 = GaussLegendreQuadrature(q)
-
-        qf = TensorProductQuadrature((qf0, qf1))
-        # bcs: ((NQ0, 3), (NQ1, 2)), ws: (NQ0 * NQ1,)
-        bcs, ws = qf.get_quadrature_points_and_weights()
-
-        # compute basis
-        raw_phi = [bm.simplex_shape_function(bc, self.p) for bc in bcs] # ((NQ0, ldof0), (NQ1, ldof1))
-        phi = bm.tensorprod(*raw_phi)
-
-        # compute source
-        import ipdb;ipdb.set_trace()
-        points = bm.einsum('cld,ql->cqd', self.node[self.cell[:, [0,3,1,4,2,5]]], phi)
-        coef_val = self.pde.source(points)
-
-        # assembly, F: (gdof,)
-        group_tensor = bm.einsum('c, q, cql, cq -> cl', self.cm, ws, phi[None,:], coef_val)
-        F = bm.zeros((self.total_dof,),dtype=bm.float64)
-        bm.add_at(F, self.cell, group_tensor) # not set_at
-        
-        return F      
+        return F 
 
     def apply_bc(self, op: PoissonOperator, F):
         isDDof0 = self.space0.is_boundary_dof()
@@ -297,7 +286,6 @@ class MGTensorPossionLFEMModel(ComputationalModel):
 
         gd = gd(self.node[isBdDof])
         uh = bm.set_at(uh, (..., isBdDof), gd)
-        # import ipdb;ipdb.set_trace()
         F = F - op @ uh # 5000w ~ 400MB
         F = bm.set_at(F, isBdDof, uh[isBdDof])
 
@@ -376,7 +364,7 @@ class MGTensorPossionLFEMModel(ComputationalModel):
         Az = Az.toarray()
         Mz = Mz.toarray()
         Bi = [None] * self.level
-
+        import ipdb;ipdb.set_trace()
         LA = cholesky(Az, lower=True)
         LinV = bm.linalg.inv(LA)
         C = LinV @ Mz @ LinV.T
@@ -389,7 +377,7 @@ class MGTensorPossionLFEMModel(ComputationalModel):
             DM = Mxi[i].diagonal()
             Lambda = 1 / (DM[:,None] + DA[:,None] * eigvals[None,:]) # (Nx, Nz)
             Bi[i] = V[None,...] @ (Lambda[:,:,None] * V.T[None,...]) # (Nx, Nz, Nz)
-            
+            import ipdb;ipdb.set_trace()
         return Bi
     
     def coarse_solve(self, r):
