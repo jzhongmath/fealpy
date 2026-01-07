@@ -279,9 +279,11 @@ class TensorFunctionSpace(FunctionSpace):
     @barycentric
     def value(self, uh: TensorLike, bc: TensorLike, index: Index=_S) -> TensorLike:
         if isinstance(bc, tuple):
-            TD = len(bc)
+            TD = (bc[0].shape[-1] + bc[1].shape[-1] - 2)
+            # TD = len(bc)
         else :
             TD = bc.shape[-1] - 1
+            
         phi = self.basis(bc, index=index)
         e2dof = self.entity_to_dof(TD, index=index)
         val = bm.einsum('cql..., cl... -> cq...', phi, uh[e2dof, ...])

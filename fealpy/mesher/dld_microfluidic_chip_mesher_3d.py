@@ -152,10 +152,10 @@ class DLDMicrofluidicChipMesher3D:
             gmsh.model.mesh.generate(3)
             gmsh.model.occ.synchronize()
 
-            if return_project_edges:
-                    self.project_edges = self.get_project_edges(
-                        gmsh, centers, radius, lc
-                    )
+            # if return_project_edges:
+            #         self.project_edges = self.get_project_edges(
+            #             gmsh, centers, radius, lc
+            #         )
             
             if return_mesh:
                     self.mesh = self.build_mesh(gmsh)

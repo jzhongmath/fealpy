@@ -180,7 +180,7 @@ class StokesOperator(LinearOperator):
         return y
 
 
-class MGTensorStokesLFEMModel(ComputationalModel):
+class MGTensorStokesLFEMModelOLD(ComputationalModel):
     """"Multigrid solver for Poisson equations defined on 
             tensor-product grids using the Linear Finite Element Method (LFEM).
     """
@@ -451,6 +451,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         Mx_.add_integrator(CouplingMassIntegrator())
         self.ugdof = Ax.shape[0]*Mz.shape[0]
         print(f'自由度个数: {Ax.shape[0]*Mz.shape[0]*3+Bx.shape[1]*Mz_.shape[1]}')
+        import ipdb;ipdb.set_trace()
         stokes_operator = StokesOperator(Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_)
        
         # A1 = sp.kron(Ax.assembly().to_scipy(), Mz.assembly().to_scipy()) + \

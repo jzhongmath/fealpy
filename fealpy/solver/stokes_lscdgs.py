@@ -55,9 +55,10 @@ class StokesLSCDGS():
             # Step 1: relax Momentum eqns
             n = len(f) // 3
             start = time.time()
-            # import ipdb;ipdb.set_trace()
+            
             # r = (f - self.Bt @ p - A @ u)
             r = (f - self.Bt @ p)
+            # import ipdb;ipdb.set_trace()
             r[:n] -= A @ u[:n]
             r[n:2*n] -= A @ u[n:2*n]
             r[2*n:3*n] -= A @ u[2*n:3*n]

@@ -24,7 +24,7 @@ def _mumps_solve(A, b):
         ```
     """
     from mumps import DMumpsContext
-    A = A.to_scipy()
+    # A = A.to_scipy()
     x = bm.to_numpy(b).copy()
 
     ctx = DMumpsContext()

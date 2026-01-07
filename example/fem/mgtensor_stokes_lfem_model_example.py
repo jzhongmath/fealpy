@@ -31,15 +31,15 @@ parser.add_argument('--outlet_length',
     help = "Length of the outlet section.")
 
 parser.add_argument('--radius',
-    default = 1 / (3 * 5), type = float,
+    default = 1 / (1 * 5), type = float,
     help = "Radius of the pillars.")
 
 parser.add_argument('--n_rows',
-    default = 3, type = int,
+    default = 1, type = int,
     help = "Number of rows of pillars in each stage.")
 
 parser.add_argument('--n_cols',
-    default = 3, type = int,
+    default = 1, type = int,
     help = "Number of columns of pillars in each stage.")
 
 parser.add_argument('--tan_angle',
@@ -55,7 +55,7 @@ parser.add_argument('--stage_length',
     help = "Number of stages (or periods) in the chip.")
 
 parser.add_argument('--lc',
-    default = 0.2/2, type = float,
+    default = 0.3/2, type = float,
     help = "Grid size for meshing.")
 
 parser.add_argument('--show_figure',
@@ -71,7 +71,7 @@ parser.add_argument('--n',
         help='Degree of Lagrange finite element space, default is 2.')
 
 parser.add_argument('--level',
-        default=3, type=int,
+        default=2, type=int,
         help='Degree of Lagrange finite element space, default is 2.')
 
 parser.add_argument('--pbar_log',
@@ -88,7 +88,11 @@ options = vars(parser.parse_args())
 from fealpy.backend import bm
 from fealpy.mesh import IntervalMesh, TensorPrismMesh
 
-from fealpy.fem import MGTensorStokesLFEMModel
+from fealpy.fem import (
+    MGTensorStokesLFEMModel, 
+    MGTensorStokesLFEMModelOLD,
+    MGTensorStokesLFEMModelI
+)
 from fealpy.geometry import DLDMicrofluidicChipModeler
 from fealpy.mesher import DLDMicrofluidicChipMesher
 
@@ -102,7 +106,7 @@ options = vars(parser.parse_args())
 # 0.046  54
 # 0.0419 64
 #
-bm.set_backend('numpy'); options['lc'] = 0.03/2
+bm.set_backend('numpy'); options['lc'] = 0.3/2
 
 # bm.set_default_device('cuda')
 
@@ -111,16 +115,36 @@ modeler = DLDMicrofluidicChipModeler(options)
 modeler.build(gmsh)
 mesher = DLDMicrofluidicChipMesher(options)
 mesher.generate(modeler, gmsh)
-gmsh.fltk.run()
+# gmsh.fltk.run()
 gmsh.finalize()
 
-n = options['n']
-level = options['level']
-# imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=2*(level - 1)*n)
-imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=8)
+step = 1 + 7
+err = []
+for n in range(1,step):
+    level = options['level']
+    # imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=2*(level - 1)*n)
+    imesh = IntervalMesh.from_interval_domain([0, 1], nx=1*2**n)
 
+    model = MGTensorStokesLFEMModelI(options=options)
+    from fealpy.mesh import TriangleMesh
+    node = bm.array([[0.0, 0.0], 
+                      [1.0, 0.0], 
+                      [1.0, 1.0], 
+                      [0.0, 1.0],
+                      [0.3, 0.2]], dtype=bm.float64)
+    cell = bm.array([[0, 1, 4],
+                     [1, 2, 4],
+                     [2, 3, 4],
+                     [3, 0, 4]], dtype= bm.int32)
+    mesh = TriangleMesh(node, cell)
 
-model = MGTensorStokesLFEMModel(options=options)
-model.set_init_mesher(mesher, imesh)
-model.set_inlet_condition()
-model.run()
+    mesh = TriangleMesh.from_box([0, 1, 0, 1], nx=1, ny=1)
+    # model.set_init_mesher(mesher, imesh,n=n)
+    model.set_init_mesher(mesh, imesh,n=n)
+    err.append(model.run())
+
+    if n > 1:
+        err1 = bm.array(err)
+        print(err1)
+        print(err1[:-1]/err1[1:])
+

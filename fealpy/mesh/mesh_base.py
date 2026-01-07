@@ -542,7 +542,7 @@ class HomogeneousMesh(Mesh):
         else:
             return bm.sum(e)
 
-    def error(self, u, v, q=3, power=2, celltype=False) -> TensorLike:
+    def error(self, u, v, q=5, power=2, celltype=False) -> TensorLike:
         """Calculate error between two functions.
         
         Parameters:

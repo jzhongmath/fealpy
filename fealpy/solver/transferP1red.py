@@ -28,7 +28,10 @@ def transferP1red(mesh: TriangleMesh, level:int, threshold=None, tensor_mesh=Fal
     Pro_p = [None]*(level-1)
     
     if threshold == None:
-            return mesh.uniform_refine(n=level-1, returnim=True)[::-1]
+            IM = mesh.uniform_refine(n=level-1, returnim=True)[::-1]
+            for k in range(level-1):
+                 IM[k] = IM[k].to_scipy()
+            return IM
 
     for i in range(level-1):
         flag0 = indofP1(mesh, threshold=threshold, tensor_mesh=tensor_mesh)

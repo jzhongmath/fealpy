@@ -79,4 +79,6 @@ from .curlcurl_upml_model import CurlCurlUPMLModel
 from .mgtensor_possion_lfem_model import MGTensorPossionLFEMModel
 # from .mgtensor_stokes_lfem_model_old import MGTensorStokesLFEMModel
 from .mgtensor_stokes_lfem_model import MGTensorStokesLFEMModel
+from .mgtensor_stokes_lfem_model_old import MGTensorStokesLFEMModelOLD
+from .mgtensor_stokes_lfem_model1 import MGTensorStokesLFEMModelI
 from .wpr_lfem_model import WPRLFEMModel

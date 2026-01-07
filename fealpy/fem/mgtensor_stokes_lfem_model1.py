@@ -8,13 +8,18 @@ from fealpy.decorator import variantmethod, cartesian
 from fealpy.mesh import TriangleMesh, IntervalMesh
 from fealpy.functionspace import LagrangeFESpace, functionspace
 from fealpy.fem import BilinearForm, LinearForm, DirichletBC, BlockForm, LinearBlockForm
-from fealpy.fem import ScalarDiffusionIntegrator, ScalarMassIntegrator, PressWorkIntegrator, CouplingMassIntegrator
+from fealpy.fem import (
+        ScalarDiffusionIntegrator, ScalarMassIntegrator, 
+        PressWorkIntegrator, CouplingMassIntegrator,
+        SourceIntegrator, ScalarSourceIntegrator, 
+    )
+
 from fealpy.model import PDEModelManager, ComputationalModel
 
 from fealpy.mesher import DLDMicrofluidicChipMesher
 
 from fealpy.sparse import spdiags, coo_matrix, csr_matrix, COOTensor, CSRTensor
-from fealpy.solver import cg, spsolve, transferP1red, transferP2red, StokesLSCDGS, indofP1, indofP2
+from fealpy.solver import cg, gmres, spsolve, transferP1red, transferP2red, StokesLSCDGS, indofP1, indofP2
 from fealpy.utils import timer
 
 import scipy.sparse as sp
@@ -26,20 +31,17 @@ import time
 import gc
 
 """
-1. 减小矩阵规模来作用内部自由度, 相应的减少插值、限制矩阵规模
-2. 整体方案
-    Plan I: 全体使用算子, 结合kron积快速平滑 (最优解, 但需要积累)
-    Plan II: 全体使用算子, 不进行快速平滑 (GPU下, 目前最优解)
-    Plan III: 除去平滑, 使用Operator (居中方案)
-3. 储存方案
-    Ai: 存储每层的二维Ax, Mx, 必要时传入一维Mz, Az.
-    Bi: 储存每层的二维Bx, Mx_, 必要时传入一维Mz_, Bz.
-    P_u: 存储每层的Pro_u, 必要时传入Iz2.
-    P_p: 储存每层的Pro_p, 必要时传入Iz1.
-    平滑过程:
-    (1) A: 临时数组, 通过Ai的assembly获取.
-    (2) BB^T, tril(BB^T), triu(BB^T), BAB^T: 储存每层三维矩阵.
-    (3) Bt: Operator
+u1 =   sin(πx)cos(πy)cos(πz)
+u2 =   cos(πx)sin(πy)cos(πz)
+u3 = -2cos(πx)cos(πy)sin(πz)
+
+we have ∇⋅u = 0. Take 
+    p(x, y, z) = sin(2πx) + cos(2πy) + sin(2πz),
+and
+    ∇p = (2πcos(2πx), -2πsin(2πy), 2πcos(2πz)),
+
+we have
+    f = -Δu + ∇p = 3π^2u + ∇p.
 """
 
 def csr_to_petsc_mat(csr):
@@ -342,7 +344,7 @@ class BtiOperator(LinearOperator):
         return y
 
 
-class MGTensorStokesLFEMModel(ComputationalModel):
+class MGTensorStokesLFEMModelI(ComputationalModel):
     """"Multigrid solver for Poisson equations defined on 
             tensor-product grids using the Linear Finite Element Method (LFEM).
     """
@@ -387,14 +389,14 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         self.setup_time = 0
         self.initial_assembly_time = 0
 
-    def set_init_mesher(self, mesher: DLDMicrofluidicChipMesher, imesh: IntervalMesh, n: int=0):
+    def set_init_mesher(self, mesh: TriangleMesh, imesh: IntervalMesh, n: int=0):
         """
         Set the initial mesh for the simulation.
         
         Parameters:
             mesh: The computational mesh object
         """
-        tmesh = mesher.mesh
+        tmesh = mesh
         if n > 0:
             tmesh.uniform_refine(n)
             # imesh.uniform_refine(n)
@@ -404,6 +406,27 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         tmesh.uniform_refine(self.level-1)
         self.tmesh = tmesh
         self.imesh = imesh
+
+        tnode = tmesh.entity('node') # (NN_t, 2)
+        inode = imesh.entity('node') # (NN_i, 1)
+        tcell = tmesh.entity('cell')
+
+        iNN = imesh.number_of_nodes()
+        tNC = tmesh.number_of_cells()
+        
+        node = bm.concat([bm.repeat(tnode, inode.shape[0], axis=0), 
+                          bm.tile(inode.T, tnode.shape[0]).T], axis=1)
+        
+        all_cell = iNN * tcell[None, :, :] + bm.arange(iNN)[:, None, None]
+        all_cell = all_cell.reshape(-1, tcell.shape[1])
+        cell = bm.concat([all_cell[:-tNC], all_cell[tNC:]], axis=1)
+
+        s0 = tmesh.entity_measure('cell')
+        s1 = imesh.entity_measure('cell')
+        self.cm = bm.einsum('i,j->ij', s1, s0).ravel()
+
+        self.node = node
+        self.cell = cell
 
         # import matplotlib.pyplot as plt
         # from fealpy.mesh import TensorPrismMesh
@@ -418,160 +441,98 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         # # tmesh.find_cell(axes, showindex=True, fontsize='35')
         # plt.show()
 
-        self.radius = mesher.radius
-        self.centers = mesher.centers
-        self.boundary = mesher.boundary
-        self.inlet_boundary = mesher.inlet_boundary
-        self.outlet_boundary = mesher.outlet_boundary
-        self.wall_boundary = mesher.wall_boundary
-        self.project_edges = mesher.project_edges
-
     def set_space_degree(self, p: int=2):
         """
         Set the polynomial degree for function spaces
         """
         self.p = p
-
-    def set_inlet_condition(self)-> None:
-        """
-        Set the PDE data for the model.
-        """
-        @cartesian
-        def inlet_velocity(p: TensorLike) -> TensorLike:
-            """Compute exact solution of velocity."""
-            x = p[..., 0]
-            y = p[..., 1]
-            z = p[..., 2]
-            result = bm.zeros(p.shape, dtype=bm.float64)
-            result[..., 0] = 10**2 *y * (1-y) * z * (0.1-z)
-            result[..., 1] = bm.array(0.0)
-            return result
-        
-        @cartesian
-        def wall_velocity(p: TensorLike) -> TensorLike:
-            """Compute exact solution of velocity."""
-            x = p[..., 0]
-            y = p[..., 1]
-            result = bm.zeros(p.shape, dtype=bm.float64)
-            result[..., 0] = bm.array(0.0)
-            result[..., 1] = bm.array(0.0)
-            return result
-        
-        @cartesian
-        def obstacle_velocity(p: TensorLike) -> TensorLike:
-            """Compute exact solution of velocity."""
-            x = p[..., 0]
-            y = p[..., 1]
-            result = bm.zeros(p.shape, dtype=bm.float64)
-            result[..., 0] = bm.array(0.0)
-            result[..., 1] = bm.array(0.0)
-            return result
-        
-        @cartesian
-        def outlet_pressure(p: TensorLike) -> TensorLike:
-            """Compute exact solution of velocity."""
-            x = p[..., 0]
-            y = p[..., 1]
-            result = bm.zeros(p.shape[0], dtype=bm.float64)
-            result[:] = 0.0
-            return result
-        
-        @cartesian
-        def is_inlet_boundary( p: TensorLike) -> TensorLike:
-            """Check if point where velocity is defined is on boundary."""
-            bd = self.inlet_boundary
-            return self.is_lateral_boundary(p, bd)
-        
-        @cartesian
-        def is_outlet_boundary( p: TensorLike) -> TensorLike:
-            """Check if point where pressure is defined is on boundary."""
-            bd = self.outlet_boundary
-            return self.is_lateral_boundary(p, bd)
-
-        @cartesian
-        def is_wall_boundary(p: TensorLike) -> TensorLike:
-            """Check if point where velocity is defined is on boundary."""
-            bd = self.wall_boundary
-            return self.is_lateral_boundary(p, bd)
-        
-        @cartesian
-        def is_top_or_bottom(p: TensorLike) -> TensorLike:
-            """Check if point where velocity is defined is on top or bottom boundary."""
-            atol = 1e-12
-            thickness = self.thickness
-            cond = (bm.abs(p[:, -1]) < atol) | (bm.abs(p[:, -1] - thickness) < atol)
-            return cond
-        
-        @cartesian
-        def is_obstacle_boundary(p: TensorLike) -> TensorLike:
-            """Check if point where velocity is defined is on boundary."""
-            x = p[..., 0]
-            y = p[..., 1]
-            radius = self.options['radius']
-            atol = 1e-12
-            on_boundary = bm.zeros_like(x, dtype=bool)
-            for center in self.centers:
-                cx, cy = center
-                on_boundary |= (x - cx)**2 + (y - cy)**2 < radius**2 + atol
-            return on_boundary
-        
-        self.inlet_velocity = inlet_velocity
-        self.wall_velocity = wall_velocity
-        self.obstacle_velocity = obstacle_velocity
-        self.outlet_pressure = outlet_pressure
-
-        self.is_inlet_boundary = is_inlet_boundary
-        self.is_outlet_boundary = is_outlet_boundary
-        self.is_wall_boundary = is_wall_boundary
-        self.is_top_or_bottom = is_top_or_bottom
-        self.is_obstacle_boundary = is_obstacle_boundary
-
-    def is_lateral_boundary(self, p: TensorLike, bd: TensorLike) -> TensorLike:
-        """Check if point is on boundary."""
-        atol = 1e-12
-        v0 = p[:, None, :-1] - bd[None, 0::2, :] # (NN, NI, 2)
-        v1 = p[:, None, :-1] - bd[None, 1::2, :] # (NN, NI, 2)
-
-        cross = v0[..., 0]*v1[..., 1] - v0[..., 1]*v1[..., 0] # (NN, NI)
-        dot = bm.einsum('ijk,ijk->ij', v0, v1) # (NN, NI)
-        cond = (bm.abs(cross) < atol) & (dot < atol)
-        return bm.any(cond, axis=1)
-    
+   
     @cartesian
     def is_velocity_boundary(self, p: TensorLike, dim=3) -> TensorLike:
         """Check if point where velocity is defined is on boundary."""
-        inlet = self.is_inlet_boundary(p)
-        wall = self.is_wall_boundary(p)
-        top_or_bottom = self.is_top_or_bottom(p)
-        obstacle = self.is_obstacle_boundary(p)
-        if dim == 2:
-            return inlet | wall | obstacle
-        return inlet | wall | top_or_bottom | obstacle
-    
-    @cartesian
-    def is_pressure_boundary(self, p: TensorLike, dim=3) -> TensorLike:
-        """Check if point where pressure is defined is on boundary."""
-        return self.is_outlet_boundary(p)
+        atol = 1e-12
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
 
+        if dim == 2:
+            return (
+                (bm.abs(x - 0.) < atol) | (bm.abs(x - 1.) < atol) |
+                (bm.abs(y - 0.) < atol) | (bm.abs(y - 1.) < atol)
+            )
+        
+        return (
+            (bm.abs(x - 0.) < atol) | (bm.abs(x - 1.) < atol) |
+            (bm.abs(y - 0.) < atol) | (bm.abs(y - 1.) < atol) |
+            (bm.abs(z - 0.) < atol) | (bm.abs(z - 1.) < atol)
+        )
+    
     @cartesian
     def velocity_dirichlet(self, p: TensorLike) -> TensorLike:
         """Optional: prescribed velocity on boundary, if needed explicitly."""
-        inlet = self.inlet_velocity(p)
-        is_inlet = self.is_inlet_boundary(p)
-        
-        result = bm.zeros_like(p, dtype=p.dtype)
-        result[is_inlet] = inlet[is_inlet]
 
-        return result
+        return self.velocity(p)
     
     @cartesian
-    def pressure_dirichlet(self, p: TensorLike) -> TensorLike:
-        """Optional: prescribed pressure on boundary (usually for stability)."""
-        outlet = self.outlet_pressure(p)
-        is_outlet = self.is_outlet_boundary(p)
-        result = bm.zeros_like(p[..., 0], dtype=p.dtype)
-        result[is_outlet] = outlet[is_outlet]
+    def velocity(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+        result = bm.zeros(p.shape, dtype=bm.float64)
+
+        result[...,0] = bm.sin(bm.pi*x) * bm.cos(bm.pi*y) * bm.cos(bm.pi * z)
+        result[...,1] = bm.cos(bm.pi*x) * bm.sin(bm.pi*y) * bm.cos(bm.pi * z)
+        result[...,2] = -2*bm.cos(bm.pi*x) * bm.cos(bm.pi*y) * bm.sin(bm.pi*z)
+
         return result
+
+    @cartesian
+    def pressure(self, p: TensorLike) -> TensorLike:
+        """Optional: prescribed pressure on boundary (usually for stability)."""
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+
+        result = bm.sin(2*bm.pi*x) + bm.cos(2*bm.pi*y) + bm.sin(2*bm.pi*z)
+
+        return result
+
+    @cartesian
+    def source(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+
+        result = bm.zeros(p.shape, dtype=bm.float64)
+        result[...,0] =  2*bm.pi * bm.cos(2*bm.pi*x)
+        result[...,1] = -2*bm.pi * bm.sin(2*bm.pi*y)
+        result[...,2] =  2*bm.pi * bm.cos(2*bm.pi*z)
+
+        return result + 3*bm.pi**2*self.velocity(p)
+
+    @cartesian
+    def source0(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+
+        return 2*bm.pi * bm.cos(2*bm.pi*x) + 3*bm.pi**2*bm.sin(bm.pi*x) * bm.cos(bm.pi*y) * bm.cos(bm.pi * z)
+
+    @cartesian
+    def source1(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+
+        return -2*bm.pi * bm.sin(2*bm.pi*y) + 3*bm.pi**2*bm.cos(bm.pi*x) * bm.sin(bm.pi*y) * bm.cos(bm.pi * z)
+
+    @cartesian
+    def source2(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+
+        return 2*bm.pi * bm.cos(2*bm.pi*z) + 3*bm.pi**2*(-2)*bm.cos(bm.pi*x) * bm.cos(bm.pi*y) * bm.sin(bm.pi*z)
 
     @variantmethod
     def linear_system(self):
@@ -583,7 +544,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         
         self.uspace = functionspace(self.mesh, ('Lagrange', 2), shape=(3, -1))
         self.pspace = functionspace(self.mesh, ('Lagrange', 1))
-        
+        self.uh = self.uspace.function()
         self.int_space0 = LagrangeFESpace(self.imesh, p=1)
         self.int_space1 = LagrangeFESpace(self.imesh, p=2)
         self.tri_space0 = LagrangeFESpace(self.tmesh, p=1)
@@ -630,92 +591,171 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         self.ugdof = Ax.shape[0]*Mz.shape[0]
         self.total_dof = Ax.shape[0]*Mz.shape[0]*3+Bx.shape[1]*Mz_.shape[1]
         print(f'自由度个数: {Ax.shape[0]*Mz.shape[0]*3+Bx.shape[0]*Mz_.shape[0]}')
-        
+        print(f'压力自由度个数：{Bx.shape[0]*Mz_.shape[0]}')
         op = StokesOperator(Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_)
         # import ipdb;ipdb.set_trace()
-        # A1 = sp.kron(Ax, Mz) + \
-        #      sp.kron(Mx, Az)
-        # B0 = sp.kron(Bx, Mz_)
-        # B1 = sp.kron(Mx_, Bz)
+        A1 = sp.kron(Ax, Mz) + \
+             sp.kron(Mx, Az)
+        B0 = sp.kron(Bx, Mz_)
+        B1 = sp.kron(Mx_, Bz)
         
-        # A0 = sp.block_diag((A1, A1, A1))
-        # B = sp.bmat([[B0, B1]])
-        # A = sp.bmat([[A0, B.T],
-        #              [B, None]])
+        A0 = sp.block_diag((A1, A1, A1))
+        B = sp.bmat([[B0, B1]])
+        A = sp.bmat([[A0, B.T],
+                     [B, None]])
 
-        # from fealpy.sparse import COOTensor
-        # A = COOTensor(
-        #     indices=bm.stack([A.row, A.col], axis=0),
-        #     values=A.data,
-        #     spshape=A.shape
-        # )
-        A = None
+        from fealpy.sparse import COOTensor
+        A = COOTensor(
+            indices=bm.stack([A.row, A.col], axis=0),
+            values=A.data,
+            spshape=A.shape
+        )
+        # A = None
         self.n_A = op.n_A
         self.n_p = op.n_p
         self.x0 = bm.zeros((self.n_A,), dtype=bm.float64)
         F = bm.zeros((self.n_A,), dtype=bm.float64)
+        F0 = self.assembly_F['notsep']()
+        F[:len(F0)] = F0
+
         return op, A, F
     
+    @variantmethod('notsep')
+    def assembly_F(self):
+        """
+        Assembly F on tensor mesh.
+        """
+        from ..quadrature import (
+                GaussLegendreQuadrature, 
+                TensorProductQuadrature, 
+                TriangleQuadrature
+            )
+        
+        p = 2
+        q = p + 3
+        qf0 = TriangleQuadrature(q)
+        qf1 = GaussLegendreQuadrature(q)
+
+        qf = TensorProductQuadrature((qf0, qf1))
+        # bcs: ((NQ0, 3), (NQ1, 2)), ws: (NQ0 * NQ1,)
+        bcs, ws = qf.get_quadrature_points_and_weights()
+
+        # compute basis
+        raw_phi = [bm.simplex_shape_function(bc, p) for bc in bcs] # ((NQ0, ldof0), (NQ1, ldof1))
+        phi = bm.tensorprod(*raw_phi)
+        
+        # compute source
+        ipoints = self.interpolation_points()
+        c2f = self.cell_to_ipoint(p=2)
+        idx = bm.arange(18).reshape(-1,6).T.ravel()
+        
+        points = bm.einsum('cld,ql->cqd', ipoints[c2f[:, idx]], phi)
+        coef_val0 = self.source0(points)
+        coef_val1 = self.source1(points)
+        coef_val2 = self.source2(points)
+
+        # assembly, F0: (gdof,)
+        group_tensor = bm.einsum('c, q, cql, cq -> cl', self.cm, ws, phi[None,:], coef_val0)
+        F0 = bm.zeros((self.ugdof,),dtype=bm.float64)
+        bm.add_at(F0, c2f[:, idx], group_tensor) # not set_at
+        
+        # assembly, F1: (gdof,)
+        group_tensor = bm.einsum('c, q, cql, cq -> cl', self.cm, ws, phi[None,:], coef_val1)
+        F1 = bm.zeros((self.ugdof,),dtype=bm.float64)
+        bm.add_at(F1, c2f[:, idx], group_tensor) # not set_at
+        
+        # assembly, F2: (gdof,)
+        group_tensor = bm.einsum('c, q, cql, cq -> cl', self.cm, ws, phi[None,:], coef_val2)
+        F2 = bm.zeros((self.ugdof,),dtype=bm.float64)
+        bm.add_at(F2, c2f[:, idx], group_tensor) # not set_at
+        F = bm.concat([F0, F1, F2], axis=0)
+
+        return F
+
+    @assembly_F.register('sep')
+    def assembly_F(self):
+        """
+        Assembly F on tensor mesh.
+        """
+        # assembly F_x
+        form0 = LinearForm(self.space0)
+        SI0 = ScalarSourceIntegrator(self.sourcex)
+        form0.add_integrator(SI0)
+        Fx = form0.assembly()
+
+        # assembly F_z
+        form1 = LinearForm(self.space1)
+        SI1 = ScalarSourceIntegrator(self.sourcez)
+        form1.add_integrator(SI1)
+        Fz = form1.assembly()
+        F = (Fx[:,None]*Fz[None,:]).reshape(-1)
+        
+        return F 
+
+    def cell_to_ipoint(self, p: int):
+        cell = self.cell
+        if p == 1:
+            return cell[:, [0, 3, 1, 4, 2, 5]]
+        tc2i = self.tmesh.cell_to_ipoint(p)
+        ic2i = self.imesh.cell_to_ipoint(p)
+        iNC = self.imesh.number_of_cells()
+        tNC = self.tmesh.number_of_cells()
+        igdof = self.imesh.number_of_global_ipoints(p)
+        c2i = bm.zeros((iNC * tNC, tc2i.shape[1] * ic2i.shape[1]), dtype=bm.int32)
+        idx = bm.arange(tc2i.shape[1] * ic2i.shape[1]).reshape(ic2i.shape[1], tc2i.shape[1]).T.flatten()
+        for i in range(iNC):
+            c2i[i*tNC:(i+1)*tNC, :] = (igdof* tc2i[None, :, :] + ic2i[i][:, None, None]).transpose(1, 0, 2).reshape(tNC, -1)[:, idx]
+        return  c2i
+    
     def boundary_dof_index(self):
-        isDDof0 = self.tmesh.boundary_node_flag()
         isDDof1 = self.tri_space1.is_boundary_dof()
         isDDof2 = self.imesh.boundary_face_flag()
         igdof = self.int_space1.number_of_global_dofs()
         isDDof3 = bm.zeros((igdof, ), dtype=bm.bool)
         bm.set_at(isDDof3, bm.arange(len(isDDof2)), isDDof2)
-        # isDDof3 = self.int_space1.is_boundary_dof()
 
         bd_dof0 = ~((~isDDof1[:, None]) * (~isDDof3[None, :])).ravel()
-        bd_dof1 = ~((~isDDof0[:, None]) * (~isDDof2[None, :])).ravel()
 
-        return (bd_dof1, bd_dof0)
+        return bd_dof0
 
     def interpolation_points(self):
-        ipoint0 = self.imesh.interpolation_points(p=1)
         ipoint1 = self.imesh.interpolation_points(p=2)
-        ipoint2 = self.tmesh.interpolation_points(p=1)
         ipoint3 = self.tmesh.interpolation_points(p=2)
-        
-        p0 = bm.concat([bm.repeat(ipoint2, ipoint0.shape[0], axis=0), 
-                          bm.tile(ipoint0.T, (ipoint2.shape[0],)).T], axis=1)
+
         p1 = bm.concat([bm.repeat(ipoint3, ipoint1.shape[0], axis=0), 
                           bm.tile(ipoint1.T, (ipoint3.shape[0],)).T], axis=1)
         
-        return (p0, p1)
+        return p1
 
     def apply_bc(self, op: StokesOperator, F):
         uh = self.x0
-        gd = (self.velocity_dirichlet, self.pressure_dirichlet)
-        threshold = (self.is_velocity_boundary, self.is_pressure_boundary)
+        gd = self.velocity_dirichlet
+        threshold = self.is_velocity_boundary
         
         dofs = self.boundary_dof_index()
         points = self.interpolation_points() # (2000w, 3) ~ 500 MB
-        basic = [3*len(points[1]), 0]
         BdDof = []
+        
+        index_dof = bm.arange(len(points))[dofs]
+        # ipoints: (NI， 3), 边界插值点坐标, 
+        bd_point = points[dofs] 
+        # flag: (NI,), 判断边界点是否属于某类边界
+        flag = threshold(bd_point)
+        index_dof = index_dof[flag]
+        val = gd(bd_point[flag])
 
-        for i in range(2):
-            index_dof = bm.arange(len(points[i]))[dofs[i]] + basic[i]
-            # ipoints: (NI， 3), 边界插值点坐标, 
-            bd_point = points[i][dofs[i]] 
-            # flag: (NI,), 判断边界点是否属于某类边界
-            flag = threshold[1-i](bd_point)
-            index_dof = index_dof[flag]
-            val = gd[1-i](bd_point[flag])
-            if i == 1:
-                index_dof = bm.concat([index_dof, index_dof + len(points[1]), 
-                                    index_dof + 2*len(points[1])], axis=0)
-                # import ipdb;ipdb.set_trace()
-                val = val.T.reshape(-1)
+        index_dof = bm.concat([index_dof, index_dof + len(points), 
+                            index_dof + 2*len(points)], axis=0)
+        val = val.T.reshape(-1)
 
-            BdDof.append(index_dof)
-            isBdDof = bm.zeros(self.n_A, dtype=bm.bool)
-            isBdDof = bm.set_at(isBdDof, index_dof, True)
-            uh = bm.set_at(uh, (..., isBdDof), val)
+        BdDof = index_dof
+        isBdDof = bm.zeros(self.n_A, dtype=bm.bool)
+        isBdDof = bm.set_at(isBdDof, index_dof, True)
+        uh = bm.set_at(uh, (..., isBdDof), val)
 
-        BdDof = bm.concat([BdDof[1], BdDof[0]], axis=0)
         F = F - op @ uh # 5000w ~ 400MB
-        F = bm.set_at(F, BdDof, uh[BdDof])
-
+        F = bm.set_at(F, index_dof, uh[index_dof])
+        
         # Fixdof
         flag = self.imesh.boundary_face_flag()
         igdof = self.int_space1.number_of_global_dofs()
@@ -724,8 +764,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         
         inflag_uz = ~isDDof
         inflag_u = indofP2(self.tmesh, threshold=self.is_velocity_boundary, tensor_mesh=True)
-        inflag_p = indofP1(self.tmesh, threshold=self.is_pressure_boundary, tensor_mesh=True)
-        print(inflag_p.sum())
+
         inflag_u = bm.to_numpy(inflag_u)
         Biginflag_u = bm.to_numpy(bm.concat([inflag_u, inflag_u], axis=0))
         inflag_uz = bm.to_numpy(inflag_uz)
@@ -735,12 +774,10 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         op.Az = op.Az[inflag_uz][:,inflag_uz]
         op.Mz = op.Mz[inflag_uz][:,inflag_uz]
 
-        if inflag_p is not None:
-            inflag_p = bm.to_numpy(inflag_p)
-            op.Bx = op.Bx[inflag_p][:,Biginflag_u]
-            op.Mx_ = op.Mx_[inflag_p][:,inflag_u]
-            op.Mz_ = op.Mz_[:,inflag_uz]
-            op.Bz = op.Bz[:,inflag_uz]
+        op.Bx = op.Bx[:,Biginflag_u]
+        op.Mx_ = op.Mx_[:,inflag_u]
+        op.Mz_ = op.Mz_[:,inflag_uz]
+        op.Bz = op.Bz[:,inflag_uz]
         
         op.set_up()
 
@@ -775,13 +812,13 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         Np = bm.zeros((level,), dtype=bm.int32)
         
         # Compute Pro and Res of u and p.
-        Pro_p = transferP1red(self.mesh0, self.level, self.is_pressure_boundary, tensor_mesh=True)
+        Pro_p = transferP1red(self.mesh0, self.level, tensor_mesh=True)
         Pro_u = transferP2red(self.mesh1, self.level, self.is_velocity_boundary, tensor_mesh=True)
         
         for j in range(level - 1, 0, -1):
-            # import ipdb;ipdb.set_trace()
             Axi[j-1] = Pro_u[j-1].T @ Axi[j] @ Pro_u[j-1]
             Mxi[j-1] = Pro_u[j-1].T @ Mxi[j] @ Pro_u[j-1]
+
             Bxi[j-1] = Pro_p[j-1].T @ Bxi[j] @ sp.block_diag([Pro_u[j-1],Pro_u[j-1]])
             Mx_i[j-1] = Pro_p[j-1].T @ Mx_i[j] @ Pro_u[j-1]
 
@@ -918,55 +955,6 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         # del self.auxMat[J]['Su0']
         return eu, ep   
 
-    def wcycle(self, r, J=None): 
-        if J is None:
-            J = self.level - 1
-        if J == 0:
-            e = bm.zeros_like(r)
-            start = time.time()
-            # e[:-1] = lg.spsolve(self.bigAi[J].tocsr()[:-1, :-1], r[:-1])
-            e = lg.spsolve(self.bigAi[J].tocsr(), r)
-            self.coarse_time += time.time() - start
-            self.coarse_count += 1
-            return e
-        
-        Res_u = self.Pro_u[J-1].T
-        Res_p = self.Pro_p[J-1].T
-        
-        ru = r[:2*self.Nu[J]]
-        rp = r[2*self.Nu[J]:]
-        
-        # pre-smoothing
-        eu, ep = self.smoothing(bm.zeros((2*self.Nu[J],)),bm.zeros((self.Np[J],)),ru,rp,J)
-        if self.smoothing_times == 2:
-            eu, ep = self.smoothing(eu,ep,ru,rp,J)
-
-        # form residual and restrict onto coarse grid
-        rru = ru - self.Ai[J] @ eu - self.Bi[J].T @ ep
-        rrp = rp - self.Bi[J] @ eu
-
-        ruc = (Res_u @ rru.reshape(2, -1).T).reshape(-1, order='F')
-        rpc = Res_p @ rrp
-        
-        # coarse grid correction
-        rc = bm.concat([ruc, rpc], axis=0)
-        ec = self.wcycle(rc, J-1)
-        # once more for w-cycle
-        ec = ec + self.wcycle(rc - self.bigAi[J-1] @ ec,J-1)
-
-        # correction on the fine grid
-        tempeu = (self.Pro_u[J-1] @ (ec[:2*self.Nu[J-1]].reshape(2, -1).T)).reshape(-1, order='F')
-        tempep = self.Pro_p[J-1] @ ec[2*self.Nu[J-1]:]
-        eu = tempeu + eu
-        ep = tempep + ep
-
-        # post-smoothing
-        eu, ep = self.smoothing(eu,ep,ru,rp,J)
-        if self.smoothing_times == 2:
-            eu, ep = self.smoothing(eu,ep,ru,rp,J)
-        e = bm.concat([eu, ep], axis=0)
-        return e       
-    
     def smoothing(self, u, p, f, g, J):
         """Solve LUe = r.
         """
@@ -981,7 +969,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         print(t,'hh')
         self.smoothing_time += t
         self.smoothing_count += 1
-        return u, p    
+        return u, p - bm.mean(p)   
     
     @variantmethod('direct')
     def solve(self, bigA, F, solver='mumps'):
@@ -1102,6 +1090,7 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         op0, A, F = self.linear_system()
         self.logger.info(f'Step 1. 完成初步线性系统组装\n')
         op, F1, BdDof = self.apply_bc(op0, bm.copy(F))
+        # F1[-self.n_p:] -= bm.mean(F1[-self.n_p:])
         del op0
         gc.collect()
         self.logger.info(f'Step 2. 完成边界自由度处理\n')
@@ -1111,10 +1100,16 @@ class MGTensorStokesLFEMModel(ComputationalModel):
         self.solver = 'mg'
         # self.solver = 'direct'
         if self.solver == 'direct':
+            # BC = DirichletBC(
+            #     (self.uspace, self.pspace),
+            #     gd=(self.velocity_dirichlet, self.pressure_dirichlet),
+            #     threshold=(self.is_velocity_boundary, self.is_pressure_boundary),
+            #     method='interp'
+            # )
             BC = DirichletBC(
                 (self.uspace, self.pspace),
-                gd=(self.velocity_dirichlet, self.pressure_dirichlet),
-                threshold=(self.is_velocity_boundary, self.is_pressure_boundary),
+                gd=self.velocity_dirichlet,
+                threshold=self.is_velocity_boundary,
                 method='interp'
             )
             A, F2 = BC.apply(A, F)
@@ -1134,15 +1129,21 @@ class MGTensorStokesLFEMModel(ComputationalModel):
             x_in = self.solve['mg'](op, F1[~bd_flag])
             x = bm.set_at(F1, ~bd_flag, x_in)
         
-        uh = x[:3*self.ugdof]
+        self.uh[:] = x[:3*self.ugdof]
         ph = x[3*self.ugdof:]
-        print(ph.max(),uh.max())
-        self.post_process(uh ,ph)
-        return uh, ph
+        print(x[:3*self.ugdof].max(),x[:3*self.ugdof].min())
+        # self.post_process(uh ,ph)
+        
+        return self.error()
     
     def error(self):
-        err = bm.sqrt(bm.mean((self.pde.solution(self.node) - self.uh)**2))
-        return err
+        # p1 = self.interpolation_points()
+        # import ipdb;ipdb.set_trace()
+        # err_u = bm.sqrt(bm.mean((self.velocity(p1).reshape(-1,order='F') - uh)**2))
+        # err_p = bm.sqrt(bm.mean((self.pressure(p0) - ph)**2))
+        l2 = self.mesh.error(self.velocity, self.uh)
+        
+        return l2
     
     def post_process(self, uh, ph):
         iNN = self.imesh.number_of_nodes()
