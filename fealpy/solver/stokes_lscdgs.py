@@ -26,7 +26,7 @@ class StokesLSCDGS():
         self.smoothingstep = smootherOpt.get('smoothingstep', 2)
         self.smoothingSp = smootherOpt.get('smoothingSp', 'SGS')
         self.smoothingbarSp = smootherOpt.get('smoothingbarSp', 'SGS')
-        self.smoothingbarSpPara = smootherOpt.get('smoothingbarSpPara', 1)
+        self.smoothingbarSpPara = smootherOpt.get('smoothingbarSpPara', 1.1)
         if (self.smoothingbarSp == 'VCYCLE') or (self.smoothingSp == 'VCYCLE'):
             self.optionmg = {
                 'solvermaxit': 1,
@@ -55,7 +55,6 @@ class StokesLSCDGS():
             # Step 1: relax Momentum eqns
             n = len(f) // 3
             start = time.time()
-            
             # r = (f - self.Bt @ p - A @ u)
             r = (f - self.Bt @ p)
             # import ipdb;ipdb.set_trace()

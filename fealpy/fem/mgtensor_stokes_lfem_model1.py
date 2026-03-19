@@ -31,6 +31,8 @@ import time
 import gc
 
 """
+ModelI, 用于验证纯Box区域收敛阶, 已成功
+
 u1 =   sin(πx)cos(πy)cos(πz)
 u2 =   cos(πx)sin(πy)cos(πz)
 u3 = -2cos(πx)cos(πy)sin(πz)
@@ -389,7 +391,7 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
         self.setup_time = 0
         self.initial_assembly_time = 0
 
-    def set_init_mesher(self, mesh: TriangleMesh, imesh: IntervalMesh, n: int=0):
+    def set_init_mesher(self, mesh: TriangleMesh, imesh: IntervalMesh, n: int=0, level: int=0):
         """
         Set the initial mesh for the simulation.
         
@@ -397,16 +399,18 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
             mesh: The computational mesh object
         """
         tmesh = mesh
+        # import ipdb;ipdb.set_trace()
         if n > 0:
             tmesh.uniform_refine(n)
             # imesh.uniform_refine(n)
         
         self.mesh0 = TriangleMesh(tmesh.entity('node'), tmesh.entity('cell'))
         self.mesh1 = TriangleMesh(tmesh.entity('node'), tmesh.entity('cell'))
+        self.level += level
         tmesh.uniform_refine(self.level-1)
         self.tmesh = tmesh
         self.imesh = imesh
-
+        
         tnode = tmesh.entity('node') # (NN_t, 2)
         inode = imesh.entity('node') # (NN_i, 1)
         tcell = tmesh.entity('cell')
@@ -414,9 +418,11 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
         iNN = imesh.number_of_nodes()
         tNC = tmesh.number_of_cells()
         
+        # xy * z
         node = bm.concat([bm.repeat(tnode, inode.shape[0], axis=0), 
                           bm.tile(inode.T, tnode.shape[0]).T], axis=1)
         
+        # 按xy方向一层一层排
         all_cell = iNN * tcell[None, :, :] + bm.arange(iNN)[:, None, None]
         all_cell = all_cell.reshape(-1, tcell.shape[1])
         cell = bm.concat([all_cell[:-tNC], all_cell[tNC:]], axis=1)
@@ -441,98 +447,15 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
         # # tmesh.find_cell(axes, showindex=True, fontsize='35')
         # plt.show()
 
+    def set_pde(self, k: int=3):
+        manager = PDEModelManager('stokes')
+        self.pde = manager.get_example(k)
+
     def set_space_degree(self, p: int=2):
         """
         Set the polynomial degree for function spaces
         """
         self.p = p
-   
-    @cartesian
-    def is_velocity_boundary(self, p: TensorLike, dim=3) -> TensorLike:
-        """Check if point where velocity is defined is on boundary."""
-        atol = 1e-12
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-
-        if dim == 2:
-            return (
-                (bm.abs(x - 0.) < atol) | (bm.abs(x - 1.) < atol) |
-                (bm.abs(y - 0.) < atol) | (bm.abs(y - 1.) < atol)
-            )
-        
-        return (
-            (bm.abs(x - 0.) < atol) | (bm.abs(x - 1.) < atol) |
-            (bm.abs(y - 0.) < atol) | (bm.abs(y - 1.) < atol) |
-            (bm.abs(z - 0.) < atol) | (bm.abs(z - 1.) < atol)
-        )
-    
-    @cartesian
-    def velocity_dirichlet(self, p: TensorLike) -> TensorLike:
-        """Optional: prescribed velocity on boundary, if needed explicitly."""
-
-        return self.velocity(p)
-    
-    @cartesian
-    def velocity(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-        result = bm.zeros(p.shape, dtype=bm.float64)
-
-        result[...,0] = bm.sin(bm.pi*x) * bm.cos(bm.pi*y) * bm.cos(bm.pi * z)
-        result[...,1] = bm.cos(bm.pi*x) * bm.sin(bm.pi*y) * bm.cos(bm.pi * z)
-        result[...,2] = -2*bm.cos(bm.pi*x) * bm.cos(bm.pi*y) * bm.sin(bm.pi*z)
-
-        return result
-
-    @cartesian
-    def pressure(self, p: TensorLike) -> TensorLike:
-        """Optional: prescribed pressure on boundary (usually for stability)."""
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-
-        result = bm.sin(2*bm.pi*x) + bm.cos(2*bm.pi*y) + bm.sin(2*bm.pi*z)
-
-        return result
-
-    @cartesian
-    def source(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-
-        result = bm.zeros(p.shape, dtype=bm.float64)
-        result[...,0] =  2*bm.pi * bm.cos(2*bm.pi*x)
-        result[...,1] = -2*bm.pi * bm.sin(2*bm.pi*y)
-        result[...,2] =  2*bm.pi * bm.cos(2*bm.pi*z)
-
-        return result + 3*bm.pi**2*self.velocity(p)
-
-    @cartesian
-    def source0(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-
-        return 2*bm.pi * bm.cos(2*bm.pi*x) + 3*bm.pi**2*bm.sin(bm.pi*x) * bm.cos(bm.pi*y) * bm.cos(bm.pi * z)
-
-    @cartesian
-    def source1(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-
-        return -2*bm.pi * bm.sin(2*bm.pi*y) + 3*bm.pi**2*bm.cos(bm.pi*x) * bm.sin(bm.pi*y) * bm.cos(bm.pi * z)
-
-    @cartesian
-    def source2(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-
-        return 2*bm.pi * bm.cos(2*bm.pi*z) + 3*bm.pi**2*(-2)*bm.cos(bm.pi*x) * bm.cos(bm.pi*y) * bm.sin(bm.pi*z)
 
     @variantmethod
     def linear_system(self):
@@ -592,6 +515,7 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
         self.total_dof = Ax.shape[0]*Mz.shape[0]*3+Bx.shape[1]*Mz_.shape[1]
         print(f'自由度个数: {Ax.shape[0]*Mz.shape[0]*3+Bx.shape[0]*Mz_.shape[0]}')
         print(f'压力自由度个数：{Bx.shape[0]*Mz_.shape[0]}')
+        # import ipdb;ipdb.set_trace()
         op = StokesOperator(Ax, Mx, Az, Mz, Bx, Bz, Mx_, Mz_)
         # import ipdb;ipdb.set_trace()
         A1 = sp.kron(Ax, Mz) + \
@@ -647,27 +571,27 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
         # compute source
         ipoints = self.interpolation_points()
         c2f = self.cell_to_ipoint(p=2)
-        idx = bm.arange(18).reshape(-1,6).T.ravel()
-        
-        points = bm.einsum('cld,ql->cqd', ipoints[c2f[:, idx]], phi)
-        coef_val0 = self.source0(points)
-        coef_val1 = self.source1(points)
-        coef_val2 = self.source2(points)
+        # idx = bm.arange(18).reshape(-1,6).T.ravel()
 
+        points = bm.einsum('cld,ql->cqd', ipoints[c2f], phi)
+        coef_val0 = self.pde.source0(points)
+        coef_val1 = self.pde.source1(points)
+        coef_val2 = self.pde.source2(points)
+        
         # assembly, F0: (gdof,)
         group_tensor = bm.einsum('c, q, cql, cq -> cl', self.cm, ws, phi[None,:], coef_val0)
         F0 = bm.zeros((self.ugdof,),dtype=bm.float64)
-        bm.add_at(F0, c2f[:, idx], group_tensor) # not set_at
-        
+        bm.add_at(F0, c2f, group_tensor) # not set_at
+
         # assembly, F1: (gdof,)
         group_tensor = bm.einsum('c, q, cql, cq -> cl', self.cm, ws, phi[None,:], coef_val1)
         F1 = bm.zeros((self.ugdof,),dtype=bm.float64)
-        bm.add_at(F1, c2f[:, idx], group_tensor) # not set_at
-        
+        bm.add_at(F1, c2f, group_tensor) # not set_at
+
         # assembly, F2: (gdof,)
         group_tensor = bm.einsum('c, q, cql, cq -> cl', self.cm, ws, phi[None,:], coef_val2)
         F2 = bm.zeros((self.ugdof,),dtype=bm.float64)
-        bm.add_at(F2, c2f[:, idx], group_tensor) # not set_at
+        bm.add_at(F2, c2f, group_tensor) # not set_at
         F = bm.concat([F0, F1, F2], axis=0)
 
         return F
@@ -729,8 +653,8 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
 
     def apply_bc(self, op: StokesOperator, F):
         uh = self.x0
-        gd = self.velocity_dirichlet
-        threshold = self.is_velocity_boundary
+        gd = self.pde.velocity_dirichlet
+        threshold = self.pde.is_velocity_boundary
         
         dofs = self.boundary_dof_index()
         points = self.interpolation_points() # (2000w, 3) ~ 500 MB
@@ -763,7 +687,7 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
         bm.set_at(isDDof, bm.arange(len(flag)), flag)
         
         inflag_uz = ~isDDof
-        inflag_u = indofP2(self.tmesh, threshold=self.is_velocity_boundary, tensor_mesh=True)
+        inflag_u = indofP2(self.tmesh, threshold=self.pde.is_velocity_boundary, tensor_mesh=True)
 
         inflag_u = bm.to_numpy(inflag_u)
         Biginflag_u = bm.to_numpy(bm.concat([inflag_u, inflag_u], axis=0))
@@ -780,7 +704,6 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
         op.Bz = op.Bz[:,inflag_uz]
         
         op.set_up()
-
         return op, F, BdDof
        
     def setup(self, op: StokesOperator):
@@ -813,7 +736,7 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
         
         # Compute Pro and Res of u and p.
         Pro_p = transferP1red(self.mesh0, self.level, tensor_mesh=True)
-        Pro_u = transferP2red(self.mesh1, self.level, self.is_velocity_boundary, tensor_mesh=True)
+        Pro_u = transferP2red(self.mesh1, self.level, self.pde.is_velocity_boundary, tensor_mesh=True)
         
         for j in range(level - 1, 0, -1):
             Axi[j-1] = Pro_u[j-1].T @ Axi[j] @ Pro_u[j-1]
@@ -881,18 +804,86 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
 
         if case == 0:
             self.bigAi = (self.Ai[0].assembly(), self.Bti[0].assembly(), self.Bi[0].assembly())
-        
+
+        # # ---- 构造 pressure nullspace ----
+        # ns_vec = M.createVecRight()
+        # ns_vec.set(0.0)
+
+        # is_u, is_p = M.getNestISs()[1]
+        # p_sub = ns_vec.getSubVector(is_p)
+        # p_sub.set(1.0)
+        # p_sub.assemble()
+        # ns_vec.restoreSubVector(is_p, p_sub)
+
+        # ns_vec.normalize()
+
+        # nullspace = PETSc.NullSpace().create(vectors=[ns_vec])
+        # M.setNullSpace(nullspace)
+        # M.setNearNullSpace(nullspace)
+        # # ---------------------------------
+
+        # ksp = PETSc.KSP().create()
+        # ksp.setOperators(M)
+        # ksp.setType('preonly') 
+        # ksp.getPC().setType('lu')
+
+        # # ksp.setUp()
+        # ksp.setFromOptions()
+        # self.bigAi = ksp
+
         A = self.Ai[0].assembly().tocsr().astype(bm.float64)
         Bt = self.Bti[0].assembly().tocsr().astype(bm.float64)
         B = self.Bi[0].assembly().tocsr().astype(bm.float64)
 
+        vel_dofs = bm.arange(A.shape[0], dtype=bm.int32)
+        pres_dofs = bm.arange(A.shape[0], A.shape[0] + B.shape[0], dtype=bm.int32)
+
         A = csr_to_petsc_mat(A)
         Bt = csr_to_petsc_mat(Bt)
         B = csr_to_petsc_mat(B)
-        
+
+        np_ = B.getSize()[0]
+        Z = PETSc.Mat().createAIJ([np_, np_])
+        Z.setUp()
+        Z.assemble()
+
         M = PETSc.Mat().createNest([[A, Bt],
-                            [B, None]])
+                                    [B, Z]])
         M.assemble()
+
+        velocity_is = PETSc.IS().createGeneral(vel_dofs)
+        pressure_is = PETSc.IS().createGeneral(pres_dofs)
+
+        # nullspace
+        ns_vec = M.createVecRight()
+        p_sub = ns_vec.getSubVector(pressure_is)
+        p_sub.set(1.0)     
+        p_sub.assemble()
+        ns_vec.restoreSubVector(pressure_is, p_sub)
+        ns_vec.normalize()
+
+        nullspace = PETSc.NullSpace().create(vectors=(ns_vec,), constant=False)
+        M.setNullSpace(nullspace)
+
+        # # KSP
+        # ksp = PETSc.KSP().create(comm=M.comm)
+        # ksp.setOperators(M)
+        # ksp.setType('fgmres')
+        # ksp.setTolerances(rtol=1e-8, atol=1e-10, max_it=1000)
+
+        # pc = ksp.getPC()
+        # pc.setType('fieldsplit')
+        # pc.setFieldSplitType(PETSc.PC.CompositeType.SCHUR)
+        # pc.setFieldSplitSchurFactType(PETSc.PC.SchurFactType.FULL)
+
+        # # 指定 field split
+        # pc.setFieldSplitIS(("velocity", velocity_is), ("pressure", pressure_is))
+
+        # ksp.setUp()
+        # vel_pc = pc.getFieldSplitSubKSP()[0].getPC()
+        # vel_pc.setType('hypre')
+        # pres_pc = pc.getFieldSplitSubKSP()[1].getPC()
+        # pres_pc.setType('jacobi')
 
         ksp = PETSc.KSP().create()
         ksp.setOperators(M)
@@ -914,7 +905,9 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
             e = self.solve(self.bigAi, r)
             self.coarse_count += 1
             self.coarse_time += time.time() - start
-            return e[:-n], e[-n:]
+            ep = e[-n:]
+            ep = ep - bm.mean(ep)
+            return e[:-n], ep
         
         P_u = self.P_u[J-1]
         P_p = self.P_p[J-1] 
@@ -923,6 +916,7 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
 
         start = time.time()
         self.assembly_time += time.time() - start
+
         # pre-smoothing
         eu, ep = self.smoothing(bm.zeros((3*self.Nu[J],), dtype=bm.float64),
                                 bm.zeros((self.Np[J],), dtype=bm.float64),ru,rp,J)
@@ -1044,7 +1038,7 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
             print(
                 f'MG Vcycle iter: {k:2d},   '
                 f'err = {bm.max(err[k, :]):8.4e}'
-            )
+            )           
 
         self.auxMat
         err = err[:k]
@@ -1090,7 +1084,7 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
         op0, A, F = self.linear_system()
         self.logger.info(f'Step 1. 完成初步线性系统组装\n')
         op, F1, BdDof = self.apply_bc(op0, bm.copy(F))
-        # F1[-self.n_p:] -= bm.mean(F1[-self.n_p:])
+        F1[-self.n_p:] -= bm.mean(F1[-self.n_p:])
         del op0
         gc.collect()
         self.logger.info(f'Step 2. 完成边界自由度处理\n')
@@ -1098,7 +1092,7 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
         import time
         start = time.time()
         self.solver = 'mg'
-        # self.solver = 'direct'
+        self.solver = 'direct'
         if self.solver == 'direct':
             # BC = DirichletBC(
             #     (self.uspace, self.pspace),
@@ -1108,8 +1102,8 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
             # )
             BC = DirichletBC(
                 (self.uspace, self.pspace),
-                gd=self.velocity_dirichlet,
-                threshold=self.is_velocity_boundary,
+                gd=self.pde.velocity_dirichlet,
+                threshold=self.pde.is_velocity_boundary,
                 method='interp'
             )
             A, F2 = BC.apply(A, F)
@@ -1120,8 +1114,8 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
             # x = self.solve['direct'](op, F1)
             tmr.send(f'求解器时间')
             next(tmr)
-            
-        elif self.solver == 'mg':            
+        
+        elif self.solver == 'mg':           
             bd_flag = bm.zeros((len(F),), dtype=bm.bool)
             bm.set_at(bd_flag, BdDof, True)
             self.logger.info(f'Step 3. 开始多重网格setup阶段\n')
@@ -1133,16 +1127,11 @@ class MGTensorStokesLFEMModelI(ComputationalModel):
         ph = x[3*self.ugdof:]
         print(x[:3*self.ugdof].max(),x[:3*self.ugdof].min())
         # self.post_process(uh ,ph)
-        
+        print(f'error: {self.error()}')
         return self.error()
     
     def error(self):
-        # p1 = self.interpolation_points()
-        # import ipdb;ipdb.set_trace()
-        # err_u = bm.sqrt(bm.mean((self.velocity(p1).reshape(-1,order='F') - uh)**2))
-        # err_p = bm.sqrt(bm.mean((self.pressure(p0) - ph)**2))
-        l2 = self.mesh.error(self.velocity, self.uh)
-        
+        l2 = self.mesh.error(self.pde.velocity, self.uh)
         return l2
     
     def post_process(self, uh, ph):

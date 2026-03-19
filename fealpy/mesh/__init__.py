@@ -21,6 +21,8 @@ from .uniform_mesh_3d import UniformMesh3d
 
 from .lagrange_triangle_mesh import LagrangeTriangleMesh
 from .lagrange_quadrangle_mesh import LagrangeQuadrangleMesh
+from .lagrange_hexahedron_mesh import LagrangeHexahedronMesh
+from .lagrange_tetrahedron_mesh import LagrangeTetrahedronMesh
 
 from .edge_mesh import EdgeMesh
 from .inp_file_parser import InpFileParser

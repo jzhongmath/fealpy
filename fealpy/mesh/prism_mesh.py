@@ -92,7 +92,7 @@ class PrismMesh(HomogeneousMesh, Plotable):
 
         return bm.barycenter(entity, node)
 
-    def entity_measure(self, etype=3, index=_S):
+    def entity_measure(self, etype=3, index=_S)-> TensorLike:
         if etype in {'cell', 3}:
             return self.cell_volume(index=index)
         elif etype in {'face', 2}:
@@ -104,7 +104,7 @@ class PrismMesh(HomogeneousMesh, Plotable):
         else:
             raise ValueError(f"entity type: {etype} is wrong!")
 
-    def cell_volume(self, index=_S):
+    def cell_volume(self, index=_S)-> TensorLike:
         """Compute the volume of an element.
 
         The volume is calculated using the formula:
@@ -119,7 +119,7 @@ class PrismMesh(HomogeneousMesh, Plotable):
 
         return val
     
-    def face_area(self, index=_S):
+    def face_area(self, index=_S)-> TensorLike:
         """Compute the area of all mesh faces.
         """
 

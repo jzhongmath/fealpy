@@ -106,7 +106,7 @@ options = vars(parser.parse_args())
 # 0.046  54
 # 0.0419 64
 #
-bm.set_backend('numpy'); options['lc'] = 0.3/2
+bm.set_backend('numpy'); options['lc'] = 1/10
 
 # bm.set_default_device('cuda')
 
@@ -117,13 +117,35 @@ mesher = DLDMicrofluidicChipMesher(options)
 mesher.generate(modeler, gmsh)
 # gmsh.fltk.run()
 gmsh.finalize()
+# import ipdb;ipdb.set_trace()
+# imesh = IntervalMesh.from_interval_domain([0, 1], nx=2**4)
+# model = MGTensorStokesLFEMModelI(options=options)
+# model.set_init_mesher(mesher.mesh, imesh, n=0)
+# model.set_pde(3)
+# model.run()
 
+"""
+确保三角形与区间网格加密次数一致：
+    n = refine + (level - 1)
+
+n = 1, refine = 1
+n = 2, refine = 2
+n = 3, refine = 3
+n = 4, refine = 3, level += 1
+n = 5, refine = 3, level += 2
+n = 6, refine = 3, level += 3
+
+"""
+
+k = 3
 step = 1 + 7
 err = []
+refine = [1, 2, 3, 3, 3]
+level =  [0, 0, 0, 1, 2]
+
 for n in range(1,step):
-    level = options['level']
     # imesh = IntervalMesh.from_interval_domain([0, 0.1], nx=2*(level - 1)*n)
-    imesh = IntervalMesh.from_interval_domain([0, 1], nx=1*2**n)
+    imesh = IntervalMesh.from_interval_domain([0, 1], nx=2*2**n)
 
     model = MGTensorStokesLFEMModelI(options=options)
     from fealpy.mesh import TriangleMesh
@@ -139,12 +161,13 @@ for n in range(1,step):
     mesh = TriangleMesh(node, cell)
 
     mesh = TriangleMesh.from_box([0, 1, 0, 1], nx=1, ny=1)
-    # model.set_init_mesher(mesher, imesh,n=n)
-    model.set_init_mesher(mesh, imesh,n=n)
+    # import ipdb;ipdb.set_trace()
+    model.set_init_mesher(mesh, imesh, n=refine[n-1], level=level[n-1])
+    model.set_pde(k)
     err.append(model.run())
 
     if n > 1:
         err1 = bm.array(err)
         print(err1)
-        print(err1[:-1]/err1[1:])
+        print(bm.log(err1[:-1]/err1[1:])/bm.log(2))
 
